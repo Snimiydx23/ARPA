@@ -1,0 +1,90 @@
+// ARPA V3 — Prisma schema
+// Upgraded from ARPA V2 (Firebase Firestore) to Prisma + SQLite
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// User record + subscription status (V2: users/{uid})
+model User {
+  id           String   @id @default(cuid())
+  uid          String   @unique // internal uid (stable, from auth)
+  email        String   @unique
+  name         String
+  picture      String   @default("")
+  token        String   @unique @default(cuid()) // dev auth bearer token
+  createdAt    DateTime @default(now())
+  lastSeen     DateTime @default(now())
+  trialEnds    DateTime // aaj + TRIAL_DAYS (set in app code)
+  paidUntil    DateTime? // null = no paid plan yet
+  plan         String   @default("trial") // trial | monthly | yearly | paid
+  lastPaymentAt DateTime?
+
+  chats    Chat[]
+  usages   Usage[]
+  payments Payment[]
+
+  @@index([email])
+}
+
+// One email = one trial (V2: trials/{email}) — prevents re-trial on account recreation
+model Trial {
+  id    String   @id @default(cuid())
+  email String   @unique
+  uid   String
+  at    DateTime @default(now())
+}
+
+// Chat history (V2: users/{uid}/chats/{chatId})
+// msgs stored as JSON string (SQLite can't store list directly)
+model Chat {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String   @default("New chat")
+  msgs      String   @default("[]") // JSON array of {role,content,model?,error?,cut?,ms?,edited?}
+  at        DateTime @default(now())
+  createdAt DateTime @default(now())
+  pinned    Boolean  @default(false) // V3.1: pin important chats to top
+  tags      String   @default("") // V3.3: comma-separated labels for filtering
+  shareToken String? @unique // V3.3: public read-only share token (null = private)
+  archived  Boolean  @default(false) // V3.5: archived chats hidden from default sidebar
+  systemPrompt String @default("") // V3.5: custom persona/instructions for this chat
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, at])
+}
+
+// Daily message counter (V2: users/{uid}/usage/{day})
+model Usage {
+  id     String   @id @default(cuid())
+  userId String
+  day    String   // YYYY-MM-DD (IST)
+  count  Int      @default(0)
+  at     DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, day])
+  @@index([userId])
+}
+
+// Payments (V2: payments/{paymentId}) — idempotent
+model Payment {
+  id        String   @id // razorpay payment id (or simulated)
+  userId    String
+  email     String   @default("")
+  plan      String
+  amount    Int // paise
+  orderId   String?
+  at        DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
