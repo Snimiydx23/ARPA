@@ -1,0 +1,339 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* ---------- ARPA brand accent (violet — evolved from V2 indigo) ---------- */
+:root {
+  --arpa: oklch(0.55 0.22 300);            /* deep violet */
+  --arpa-foreground: oklch(0.985 0 0);
+  --arpa-soft: oklch(0.96 0.03 300);       /* tinted soft bg */
+  --arpa-soft-foreground: oklch(0.45 0.2 300);
+  --user-bubble: oklch(0.96 0.005 300);
+  --user-bubble-foreground: oklch(0.145 0 0);
+}
+.dark {
+  --arpa: oklch(0.72 0.19 300);
+  --arpa-foreground: oklch(0.13 0.02 300);
+  --arpa-soft: oklch(0.27 0.06 300);
+  --arpa-soft-foreground: oklch(0.82 0.15 300);
+  --user-bubble: oklch(0.27 0.01 300);
+  --user-bubble-foreground: oklch(0.985 0 0);
+}
+
+@layer utilities {
+  .bg-arpa { background-color: var(--arpa); }
+  .text-arpa { color: var(--arpa); }
+  .border-arpa { border-color: var(--arpa); }
+  .bg-arpa-soft { background-color: var(--arpa-soft); }
+  .text-arpa-soft { color: var(--arpa-soft-foreground); }
+  .ring-arpa { --tw-ring-color: var(--arpa); }
+
+  /* gradient brand text */
+  .arpa-gradient-text {
+    background: linear-gradient(135deg, var(--arpa), oklch(0.65 0.22 320));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* glassmorphism panel */
+  .arpa-glass {
+    background: color-mix(in oklab, var(--background) 75%, transparent);
+    backdrop-filter: blur(12px) saturate(140%);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
+  }
+
+  /* aurora background for hero */
+  .arpa-aurora {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .arpa-aurora::before, .arpa-aurora::after {
+    content: "";
+    position: absolute;
+    width: 60vw;
+    height: 60vw;
+    border-radius: 50%;
+    filter: blur(80px);
+    opacity: 0.45;
+    mix-blend-mode: screen;
+  }
+  .arpa-aurora::before {
+    background: radial-gradient(circle at center, var(--arpa), transparent 60%);
+    top: -20vw;
+    left: -10vw;
+    animation: arpa-drift 18s ease-in-out infinite;
+  }
+  .arpa-aurora::after {
+    background: radial-gradient(circle at center, oklch(0.7 0.2 200), transparent 60%);
+    bottom: -20vw;
+    right: -10vw;
+    animation: arpa-drift 22s ease-in-out infinite reverse;
+  }
+  @keyframes arpa-drift {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    50% { transform: translate(6vw, 4vw) scale(1.08); }
+  }
+
+  /* thin custom scrollbar for chat lists */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover { background-color: var(--muted-foreground); }
+
+  /* streaming cursor */
+  .streaming-cursor::after {
+    content: "";
+    display: inline-block;
+    width: 8px;
+    height: 16px;
+    margin-left: 2px;
+    vertical-align: text-bottom;
+    background: currentColor;
+    opacity: 0.7;
+    animation: arpa-blink 1s steps(2, start) infinite;
+  }
+  @keyframes arpa-blink { to { opacity: 0.15; } }
+
+  /* fade-in for new messages */
+  .animate-msg-in {
+    animation: arpa-msg-in 0.32s cubic-bezier(0.21, 1.02, 0.73, 1) both;
+  }
+  @keyframes arpa-msg-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* pulse for mic / recording */
+  .arpa-pulse {
+    animation: arpa-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes arpa-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--arpa) 55%, transparent); }
+    50% { box-shadow: 0 0 0 10px transparent; }
+  }
+
+  /* slow zoom for hero logo */
+  .arpa-zoom {
+    animation: arpa-zoom 6s ease-in-out infinite alternate;
+  }
+  @keyframes arpa-zoom {
+    from { transform: scale(1); }
+    to { transform: scale(1.05); }
+  }
+
+  /* shimmer skeleton */
+  .arpa-shimmer {
+    position: relative;
+    overflow: hidden;
+    background: var(--muted);
+  }
+  .arpa-shimmer::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--background) 60%, transparent), transparent);
+    animation: arpa-shimmer 1.6s infinite;
+  }
+  @keyframes arpa-shimmer {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+
+  /* code-block language badge color */
+  .arpa-md pre + .cb .h span:first-child,
+  .cb .h span:first-child {
+    color: var(--arpa);
+    font-weight: 600;
+    text-transform: lowercase;
+  }
+
+  /* fade slide-up for modals/dialogs */
+  .animate-slide-up {
+    animation: arpa-slide-up 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  @keyframes arpa-slide-up {
+    from { opacity: 0; transform: translateY(12px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  /* ARPA markdown styling */
+  .arpa-md > *:first-child { margin-top: 0; }
+  .arpa-md > *:last-child { margin-bottom: 0; }
+  .arpa-md p { margin: 0 0 14px; }
+  .arpa-md h1, .arpa-md h2, .arpa-md h3, .arpa-md h4 {
+    line-height: 1.35;
+    margin: 24px 0 10px;
+    font-weight: 650;
+  }
+  .arpa-md h1 { font-size: 1.375rem; }
+  .arpa-md h2 { font-size: 1.22rem; }
+  .arpa-md h3 { font-size: 1.09rem; }
+  .arpa-md h4 { font-size: 0.97rem; }
+  .arpa-md ul, .arpa-md ol { margin: 0 0 14px; padding-left: 1.6rem; }
+  .arpa-md li { margin: 4px 0; }
+  .arpa-md li > p { margin: 0 0 6px; }
+  .arpa-md strong { font-weight: 650; }
+  .arpa-md blockquote {
+    margin: 0 0 14px;
+    padding: 4px 16px;
+    border-left: 3px solid var(--border);
+    color: var(--muted-foreground);
+  }
+  .arpa-md hr { border: 0; border-top: 1px solid var(--border); margin: 22px 0; }
+  .arpa-md code {
+    font-family: var(--font-mono);
+    font-size: 0.875em;
+    background: var(--muted);
+    padding: 2px 5px;
+    border-radius: 5px;
+  }
+  .arpa-md a { color: var(--arpa); text-decoration: underline; }
+  .arpa-md table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.875rem;
+    display: block;
+    overflow-x: auto;
+  }
+  .arpa-md th, .arpa-md td {
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+  }
+  .arpa-md th { font-weight: 650; white-space: nowrap; background: var(--muted); }
+  .arpa-md tr:last-child td { border-bottom: 0; }
+}
