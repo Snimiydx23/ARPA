@@ -4,26 +4,28 @@
 //   NVIDIA_API_KEY   (required)  — from build.nvidia.com → "Get API Key"
 //   NVIDIA_BASE_URL  (optional)  — default https://integrate.api.nvidia.com/v1
 //   VISION_MODEL     (optional)  — multimodal model for image turns, default moonshotai/kimi-k3
+//   VISION_API_KEY   (optional)  — separate nvapi key for the vision model; falls back to NVIDIA_API_KEY
 //   VISION_REASONING_EFFORT (optional) — e.g. "low" to make image answers faster (sent as reasoning_effort)
 //   TITLE_MODEL      (optional)  — model for auto chat titles (default = first model in MODELS)
 
 export const NV_BASE = (process.env.NVIDIA_BASE_URL || "https://integrate.api.nvidia.com/v1").replace(/\/+$/, "");
 export const VISION_MODEL = process.env.VISION_MODEL || "moonshotai/kimi-k3";
+export const VISION_KEY = process.env.VISION_API_KEY || undefined;
 
 export type ChatMsg = { role: "system" | "user" | "assistant"; content: any };
 
-function key() {
-  const k = process.env.NVIDIA_API_KEY;
+function key(override?: string) {
+  const k = override || process.env.NVIDIA_API_KEY;
   if (!k) throw new Error("NVIDIA_API_KEY is not set on the server (Vercel → Settings → Environment Variables).");
   return k;
 }
 
 /** Raw POST to /chat/completions. Returns the fetch Response (caller handles stream / json). */
-export async function nvChat(body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+export async function nvChat(body: Record<string, unknown>, signal?: AbortSignal, apiKey?: string): Promise<Response> {
   const r = await fetch(`${NV_BASE}/chat/completions`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${key()}`,
+      Authorization: `Bearer ${key(apiKey)}`,
       "Content-Type": "application/json",
       Accept: body.stream ? "text/event-stream" : "application/json",
     },
@@ -45,8 +47,8 @@ export async function nvChat(body: Record<string, unknown>, signal?: AbortSignal
 }
 
 /** Non-streaming completion → assistant text. */
-export async function nvComplete(body: Record<string, unknown>): Promise<string> {
-  const r = await nvChat({ ...body, stream: false });
+export async function nvComplete(body: Record<string, unknown>, apiKey?: string): Promise<string> {
+  const r = await nvChat({ ...body, stream: false }, undefined, apiKey);
   const j: any = await r.json();
   return String(j?.choices?.[0]?.message?.content || "").trim();
 }
