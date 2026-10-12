@@ -2,7 +2,7 @@
 // Body: { image: "<data-url or base64 or http url>", prompt? } → { ok, text }
 // Uses an NVIDIA NIM vision model (VISION_MODEL env, default moonshotai/kimi-k3).
 import { bearerUid, json } from "@/lib/arpa";
-import { nvComplete, VISION_MODEL } from "@/lib/llm";
+import { nvComplete, VISION_MODEL, VISION_KEY } from "@/lib/llm";
 
 export const maxDuration = 120;
 
@@ -35,7 +35,7 @@ export async function POST(req: Request) {
       ],
       temperature: 0.2,
       max_tokens: 1024,
-    });
+    }, VISION_KEY);
     if (!text) return json({ ok: false, error: "No answer was returned for this image." }, 422);
     return json({ ok: true, text });
   } catch (e: any) {
