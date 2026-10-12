@@ -1,13 +1,15 @@
 // POST /api/chat — AI streaming chat (V3: replaces V2 api/chat.js)
-// Uses z-ai-web-dev-sdk instead of NVIDIA Nemotron. The SDK yields Uint8Array
-// chunks containing raw SSE text, so we parse them and re-emit as per-token SSE.
-import ZAI from "z-ai-web-dev-sdk";
+// Uses NVIDIA Nemotron via NIM's OpenAI-compatible API (src/lib/llm.ts).
+// Upstream SSE is parsed and re-emitted as per-token SSE in the same format the client expects.
+import { nvChat, noThinking } from "@/lib/llm";
 import { db } from "@/lib/db";
 import {
   CFG, models, bearerUid, status, takeQuota, json, systemPrompt,
 } from "@/lib/arpa";
 
 const MAX_CTX_CHARS = CFG.maxCtx;
+// Allow long streamed answers on Vercel (seconds)
+export const maxDuration = 300;
 
 function pickTemperature(body: unknown): number {
   if (!body || typeof body !== "object") return 0.3;
@@ -67,13 +69,11 @@ export async function POST(req: Request) {
     basePrompt += `\n\nADDITIONAL PERSONA/INSTRUCTIONS FOR THIS CHAT:\n${customPrompt.trim()}`;
   }
   const messages = [
-    { role: "assistant", content: basePrompt },
+    { role: "system", content: basePrompt },
     ...msgs.slice(start),
   ];
 
-  // Build SSE stream from z-ai-web-dev-sdk.
-  // The SDK yields Uint8Array chunks containing raw SSE text; we parse those
-  // and re-emit per-token `data:` frames so the client can render token-by-token.
+  // Build SSE stream from NVIDIA NIM and re-emit per-token `data:` frames.
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
@@ -81,13 +81,15 @@ export async function POST(req: Request) {
         try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`)); } catch {}
       };
       try {
-        const zai = await ZAI.create();
-        const completion = await zai.chat.completions.create({
+        const upstream = await nvChat({
+          model,
           messages,
           stream: true,
           temperature,
-          thinking: { type: "disabled" },
-        });
+          top_p: 0.95,
+          max_tokens: CFG.maxTokens,
+          ...noThinking,
+        }, req.signal);
 
         let buf = "";
         const handleText = (text: string) => {
@@ -113,14 +115,12 @@ export async function POST(req: Request) {
           }
         };
 
-        for await (const chunk of completion as any) {
-          if (chunk instanceof Uint8Array) {
-            handleText(Buffer.from(chunk).toString("utf8"));
-          } else if (typeof chunk === "string") {
-            handleText(chunk);
-          } else if (chunk?.choices?.[0]?.delta?.content) {
-            send({ choices: [{ delta: { content: chunk.choices[0].delta.content }, finish_reason: chunk.choices[0].finish_reason || null }] });
-          }
+        const reader = upstream.body!.getReader();
+        const dec = new TextDecoder();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          handleText(dec.decode(value, { stream: true }));
         }
         if (buf.trim()) handleText("\n");
         send("[DONE]");
@@ -137,7 +137,7 @@ export async function POST(req: Request) {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache, no-transform",
       "x-accel-buffering": "no",
-      "x-arpa-model": model,
+      "x-arpa-model": list.find(m => m.id === model)?.label || model,
       "x-arpa-used": String(q.used),
       "x-arpa-limit": String(st.limit),
     },

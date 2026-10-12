@@ -1,5 +1,5 @@
 // ARPA V3 — shared server-side helpers
-// Upgraded from V2 api/_lib.js (Firebase + Razorpay + NVIDIA) to Prisma + z-ai-web-dev-sdk
+// Upgraded from V2 api/_lib.js (Firebase + Razorpay + NVIDIA) to Prisma + NVIDIA NIM (src/lib/llm.ts)
 import crypto from "node:crypto";
 import { db } from "@/lib/db";
 
@@ -14,11 +14,11 @@ export const CFG = {
   admins: (process.env.ADMIN_EMAILS || "").toLowerCase().split(",").map(s => s.trim()).filter(Boolean),
 };
 
-// MODELS — V3 uses z-ai-web-dev-sdk (single backend model). Expose as labelled options.
-// Format: "id|Label,..."  (first = default). Default keeps V2's "Pro/Fast" flavour.
+// MODELS — NVIDIA NIM model ids, shown with friendly labels.
+// Format: "nvidiaModelId|Label,..."  (first = default). Override via MODELS env.
 export function models() {
   const raw = process.env.MODELS ||
-    "arpa-pro|ARPA Pro,arpa-fast|ARPA Fast,arpa-mini|ARPA Mini";
+    "nvidia/nemotron-3-ultra-550b-a55b|ARPA Pro";
   return raw.split(",").map(s => s.trim()).filter(Boolean).map(s => {
     const [id, label] = s.split("|");
     return { id: id.trim(), label: (label || id).trim() };

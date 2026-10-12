@@ -1,7 +1,10 @@
 // POST /api/vision — image understanding (V3.2 VLM).
 // Body: { image: "<data-url or base64 or http url>", prompt? } → { ok, text }
-import ZAI, { type VisionMessage } from "z-ai-web-dev-sdk";
+// Uses an NVIDIA NIM vision model (VISION_MODEL env, default meta/llama-3.2-90b-vision-instruct).
 import { bearerUid, json } from "@/lib/arpa";
+import { nvComplete, VISION_MODEL } from "@/lib/llm";
+
+export const maxDuration = 120;
 
 export async function POST(req: Request) {
   const uid = bearerUid(req);
@@ -19,23 +22,20 @@ export async function POST(req: Request) {
   }
 
   try {
-    const zai = await ZAI.create();
-    const messages: VisionMessage[] = [
-      { role: "assistant", content: [{ type: "text", text: "You are ARPA, a helpful vision assistant. Always reply in English. Be concise but complete." }] },
-      {
-        role: "user",
-        content: [
-          { type: "text", text: prompt },
-          { type: "image_url", image_url: { url } },
-        ],
-      },
-    ];
-    const response = await zai.chat.completions.createVision({
-      model: "glm-4.6v",
-      messages,
-      thinking: { type: "disabled" },
+    const text = await nvComplete({
+      model: VISION_MODEL,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "You are ARPA, a helpful vision assistant. Always reply in English. Be concise but complete.\n\n" + prompt },
+            { type: "image_url", image_url: { url } },
+          ],
+        },
+      ],
+      temperature: 0.2,
+      max_tokens: 1024,
     });
-    const text = (response?.choices?.[0]?.message?.content || "").trim();
     if (!text) return json({ ok: false, error: "No answer was returned for this image." }, 422);
     return json({ ok: true, text });
   } catch (e: any) {

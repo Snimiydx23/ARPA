@@ -186,10 +186,35 @@ export function MessageBubble({
   };
 
   // TTS read-aloud — fetch mp3 from /api/tts, play sequentially for long text
+  // Browser built-in speech fallback (used when server TTS is not configured)
+  const speakBrowser = (text: string, rate: number) => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      toast.error("Read-aloud is not supported in this browser");
+      setTtsState("idle");
+      return;
+    }
+    const plain = text
+      .replace(/```[\s\S]*?```/g, " code block. ")
+      .replace(/[#*_`>|~\[\]()-]+/g, " ")
+      .replace(/https?:\/\/\S+/g, " link ");
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(plain);
+    u.rate = Math.min(2, Math.max(0.5, rate || 1));
+    // prefer an Indian English / Hindi voice when available
+    const voices = window.speechSynthesis.getVoices();
+    const v = voices.find((x) => /en-IN|hi-IN/i.test(x.lang)) || voices.find((x) => /^en/i.test(x.lang));
+    if (v) u.voice = v;
+    u.onend = () => setTtsState("idle");
+    u.onerror = () => setTtsState("idle");
+    setTtsState("playing");
+    window.speechSynthesis.speak(u);
+  };
+
   const speak = async () => {
     if (ttsState === "playing") {
       audioRef.current?.pause();
       audioRef.current = null;
+      try { window.speechSynthesis?.cancel(); } catch {}
       setTtsState("idle");
       return;
     }
@@ -217,6 +242,7 @@ export function MessageBubble({
         });
         if (!r.ok) {
           const e = await r.json().catch(() => ({}));
+          if (e?.fallback === "browser") { speakBrowser(text, settings.ttsSpeed); return; }
           throw new Error(e?.error || `TTS error ${r.status}`);
         }
         const blob = await r.blob();
