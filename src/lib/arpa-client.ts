@@ -22,6 +22,8 @@ export type ChatMsg = {
   reaction?: "up" | "down" | null;
   image?: string; // full-size data-URL, only in memory for the turn it was sent
   thumb?: string; // small data-URL, persisted with chat history
+  images?: string[]; // extra page images (scanned PDF), memory only
+  file?: { name: string; text: string; size?: number; pages?: number; truncated?: boolean }; // attached document text
 };
 export type Chat = {
   id: string;
@@ -103,7 +105,7 @@ export async function api<T = any>(
 
 // SSE streaming fetch — returns the reader + headers
 export async function streamChat(
-  body: { messages: { role: string; content: string; image?: string }[]; model: string; temperature?: number; systemPrompt?: string },
+  body: { messages: { role: string; content: string; image?: string; images?: string[]; file?: { name: string; text: string } }[]; model: string; temperature?: number; systemPrompt?: string },
   signal: AbortSignal
 ): Promise<{ response: Response }> {
   const token = tokenStore.get();

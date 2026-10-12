@@ -2,7 +2,7 @@
 // ARPA V3.2 — First-login onboarding coach marks.
 // Shows 4 highlight steps over the chat app. Dismissed via localStorage flag.
 import * as React from "react";
-import { ArrowRight, X, Sparkles, Mic, ImagePlus, Globe, Settings2 } from "lucide-react";
+import { ArrowRight, X, Sparkles, Mic, ImagePlus, Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const ONBOARD_KEY = "arpa_onboarded_v32";
@@ -15,15 +15,9 @@ const STEPS = [
     color: "text-arpa",
   },
   {
-    icon: Globe,
-    title: "Live web search",
-    body: "Use the Globe icon in the composer to look up the latest news, rates, or live info and send results into the chat.",
-    color: "text-cyan-500",
-  },
-  {
     icon: ImagePlus,
-    title: "Understand images",
-    body: "Use the ImagePlus icon to upload any photo — ARPA will give a description, OCR, and details.",
+    title: "Drop any file or image",
+    body: "Drag & drop (or use the 📎 clip / Ctrl+V) a photo, PDF, Word, Excel, PowerPoint, CSV or code file — then ask ARPA to explain, summarise or analyse it.",
     color: "text-emerald-500",
   },
   {

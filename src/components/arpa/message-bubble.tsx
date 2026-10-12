@@ -1,8 +1,9 @@
 "use client";
 // ARPA V3.7 — chat message bubble with TTS, edit, branch, regen-with-model, reactions, copy-markdown.
+import { fmtSize } from "@/lib/file-extract";
 import * as React from "react";
 import { toast } from "sonner";
-import { Check, Copy, RefreshCw, Play, AlertTriangle, Volume2, Square, Loader2, Pencil, GitFork, ChevronDown, ThumbsUp, ThumbsDown } from "lucide-react";
+import { Check, Copy, RefreshCw, Play, AlertTriangle, Volume2, Square, Loader2, Pencil, GitFork, ChevronDown, ThumbsUp, ThumbsDown, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -72,6 +73,19 @@ export function MessageBubble({
           {msg.edited && <span className="px-1 text-[10px] italic text-muted-foreground">edited</span>}
           {(msg.image || msg.thumb) && (
             <img src={msg.image || msg.thumb} alt="attached" className="max-h-56 max-w-[240px] rounded-2xl border border-border object-cover" />
+          )}
+          {msg.file && (
+            <div className="flex max-w-[280px] items-center gap-2.5 rounded-2xl border border-border bg-card px-3 py-2">
+              <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-arpa/15 text-arpa">
+                <FileText className="size-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium" title={msg.file.name}>{msg.file.name}</p>
+                <p className="text-[11px] text-muted-foreground">
+                  {msg.file.pages ? `${msg.file.pages} pages · ` : ""}{msg.file.size ? fmtSize(msg.file.size) : "document"}
+                </p>
+              </div>
+            </div>
           )}
           <div className="whitespace-pre-wrap break-words rounded-2xl bg-[var(--user-bubble)] px-4 py-2.5 text-[15px] leading-relaxed text-[var(--user-bubble-foreground)]">
             {msg.content}

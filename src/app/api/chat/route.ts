@@ -1,13 +1,15 @@
 // POST /api/chat — AI streaming chat (V3: replaces V2 api/chat.js)
 // Uses NVIDIA Nemotron via NIM's OpenAI-compatible API (src/lib/llm.ts).
 // Upstream SSE is parsed and re-emitted as per-token SSE in the same format the client expects.
-import { nvChat, noThinking, VISION_MODEL } from "@/lib/llm";
+import { nvChat, noThinking, VISION_MODEL, VISION_KEY } from "@/lib/llm";
 import { db } from "@/lib/db";
 import {
   CFG, models, bearerUid, status, takeQuota, json, systemPrompt,
 } from "@/lib/arpa";
 
 const MAX_CTX_CHARS = CFG.maxCtx;
+// Max characters of an attached document sent to the model (per message)
+const FILE_CHARS = Number(process.env.MAX_FILE_CHARS || 150000);
 // Allow long streamed answers on Vercel (seconds)
 export const maxDuration = 300;
 
@@ -53,10 +55,18 @@ export async function POST(req: Request) {
   const msgs = (Array.isArray(body.messages) ? body.messages : [])
     .filter((m: any) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim())
     .map((m: any) => {
-      const o: { role: string; content: string; image?: string } = { role: m.role as string, content: m.content.slice(0, 40000) };
-      // optional attached image (data-URL) on user messages — max ~6MB
-      if (m.role === "user" && typeof m.image === "string" && /^data:image\/[a-z+]+;base64,/i.test(m.image) && m.image.length < 6_000_000) {
-        o.image = m.image;
+      const o: { role: string; content: string; images?: string[] } = { role: m.role as string, content: m.content.slice(0, 40000) };
+      if (m.role === "user") {
+        // optional attached document text → folded into the message for the model
+        if (m.file && typeof m.file.text === "string" && m.file.text.trim()) {
+          const name = String(m.file.name || "file").slice(0, 200);
+          o.content = `[Attached file: ${name}]\n<file name="${name}">\n${m.file.text.slice(0, FILE_CHARS)}\n</file>\n\n${o.content}`;
+        }
+        // optional attached image(s) (data-URLs): main image + extra pages (scanned PDF), max 5
+        const imgs = [m.image, ...(Array.isArray(m.images) ? m.images : [])]
+          .filter((u: unknown) => typeof u === "string" && /^data:image\/[a-z+]+;base64,/i.test(u as string) && (u as string).length < 6_000_000)
+          .slice(0, 5) as string[];
+        if (imgs.length) o.images = imgs;
       }
       return o;
     });
@@ -77,13 +87,13 @@ export async function POST(req: Request) {
   }
   const recent = msgs.slice(start);
   // if any message in context carries an image → use the multimodal model for this turn
-  const hasImage = recent.some((m: any) => m.image);
+  const hasImage = recent.some((m: any) => m.images?.length);
   const useModel = hasImage ? VISION_MODEL : model;
   const messages = [
     { role: "system", content: basePrompt },
     ...recent.map((m: any) =>
-      m.image
-        ? { role: m.role, content: [{ type: "text", text: m.content }, { type: "image_url", image_url: { url: m.image } }] }
+      m.images?.length
+        ? { role: m.role, content: [{ type: "text", text: m.content }, ...m.images.map((url: string) => ({ type: "image_url", image_url: { url } }))] }
         : { role: m.role, content: m.content }
     ),
   ];
@@ -108,7 +118,7 @@ export async function POST(req: Request) {
           top_p: 0.95,
           max_tokens: CFG.maxTokens,
           ...extras,
-        }, req.signal);
+        }, req.signal, hasImage ? VISION_KEY : undefined);
 
         let buf = "";
         const handleText = (text: string) => {

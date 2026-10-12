@@ -2,10 +2,11 @@
 // ARPA V3.2 — chat composer with voice input, image attach, web search, settings.
 import * as React from "react";
 import { toast } from "sonner";
-import { ArrowUp, Square, Lock, Mic, Settings2, Loader2, Globe, X } from "lucide-react";
+import { ArrowUp, Square, Lock, Mic, Settings2, Loader2, X, FileText, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/arpa-client";
-import { ImageAttach, prepareImage, type PickedImage } from "./image-attach";
+import { ImageAttach, type PickedImage } from "./image-attach";
+import { extractFile, fmtSize, MAX_FILE_CHARS, type PickedFile } from "@/lib/file-extract";
 
 export function Composer({
   busy,
@@ -24,7 +25,7 @@ export function Composer({
   locked: boolean;
   lockText: string;
   lockSub: string;
-  onSend: (text: string, img?: PickedImage) => void;
+  onSend: (text: string, img?: PickedImage, file?: PickedFile) => void;
   onStop: () => void;
   onPlans: () => void;
   onSettings: () => void;
@@ -37,6 +38,9 @@ export function Composer({
   const mediaRef = React.useRef<MediaRecorder | null>(null);
   const chunksRef = React.useRef<Blob[]>([]);
   const [img, setImg] = React.useState<PickedImage | null>(null);
+  const [file, setFile] = React.useState<PickedFile | null>(null);
+  const [reading, setReading] = React.useState(false);
+  const [dragging, setDragging] = React.useState(false);
   const recogRef = React.useRef<any>(null);
 
   const grow = () => {
@@ -67,8 +71,10 @@ export function Composer({
 
   const submit = () => {
     const t = value.trim();
-    if ((!t && !img) || busy) return;
-    onSend(t || "Describe this image.", img || undefined);
+    if ((!t && !img && !file) || busy || reading) return;
+    const fallback = file ? "Explain this file — summary, key points and anything important." : "Describe this image.";
+    onSend(t || fallback, img || undefined, file || undefined);
+    setFile(null);
     setValue("");
     setImg(null);
     requestAnimationFrame(grow);
@@ -87,15 +93,85 @@ export function Composer({
     });
   };
 
-  // paste an image (Ctrl+V / screenshot) directly into the composer
-  const onPaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const item = Array.from(e.clipboardData?.items || []).find((i) => i.type.startsWith("image/"));
-    if (!item) return;
-    const f = item.getAsFile();
-    if (!f) return;
-    e.preventDefault();
-    try { setImg(await prepareImage(f)); } catch (err: any) { toast.error(err?.message || "Image error"); }
+  // Read dropped / picked / pasted files. Images → img (vision model); documents → file text (chat model).
+  // Several documents are merged into one attachment.
+  const handleFiles = async (files: File[]) => {
+    if (!files.length || busy) return;
+    setReading(true);
+    const docs: PickedFile[] = [];
+    try {
+      for (const f of files) {
+        try {
+          const r = await extractFile(f);
+          if (r.kind === "image") {
+            if (img || files.filter((x) => x.type.startsWith("image/")).length > 1) toast.message("Only one image per message — using the latest one.");
+            setImg(r.img);
+          } else docs.push(r.file);
+        } catch (err: any) {
+          toast.error(`${f.name}: ${err?.message || "could not read file"}`);
+        }
+      }
+      if (docs.length) {
+        setFile((prev) => {
+          const all = prev ? [prev, ...docs] : docs;
+          if (all.length === 1) return all[0];
+          let text = all.map((d) => `===== FILE: ${d.name} =====\n${d.text}`).join("\n\n");
+          const truncated = text.length > MAX_FILE_CHARS || all.some((d) => d.truncated);
+          text = text.slice(0, MAX_FILE_CHARS);
+          return {
+            name: all.map((d) => d.name).join(", "),
+            size: all.reduce((n, d) => n + d.size, 0),
+            text,
+            truncated,
+          };
+        });
+      }
+    } finally {
+      setReading(false);
+      requestAnimationFrame(() => taRef.current?.focus());
+    }
   };
+
+  // paste an image / file (Ctrl+V / screenshot) directly into the composer
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData?.items || [])
+      .filter((i) => i.kind === "file")
+      .map((i) => i.getAsFile())
+      .filter(Boolean) as File[];
+    if (!files.length) return;
+    e.preventDefault();
+    handleFiles(files);
+  };
+
+  // Drag & drop anywhere on the page
+  const handleFilesRef = React.useRef(handleFiles);
+  handleFilesRef.current = handleFiles;
+  React.useEffect(() => {
+    if (locked) return;
+    let depth = 0;
+    const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types || []).includes("Files");
+    const onEnter = (e: DragEvent) => { if (!hasFiles(e)) return; e.preventDefault(); depth++; setDragging(true); };
+    const onOver = (e: DragEvent) => { if (!hasFiles(e)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "copy"; };
+    const onLeave = (e: DragEvent) => { if (!hasFiles(e)) return; depth = Math.max(0, depth - 1); if (!depth) setDragging(false); };
+    const onDrop = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth = 0;
+      setDragging(false);
+      const files = Array.from(e.dataTransfer?.files || []);
+      if (files.length) handleFilesRef.current(files);
+    };
+    window.addEventListener("dragenter", onEnter);
+    window.addEventListener("dragover", onOver);
+    window.addEventListener("dragleave", onLeave);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragenter", onEnter);
+      window.removeEventListener("dragover", onOver);
+      window.removeEventListener("dragleave", onLeave);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, [locked]);
 
   // Browser speech recognition (Chrome / Edge / Android) — free, no API key.
   const getSpeechRecognition = (): any =>
@@ -205,19 +281,61 @@ export function Composer({
 
   return (
     <div className="relative px-3 pb-3 sm:px-4">
-      {img && (
-        <div className="mx-auto mb-2 flex max-w-3xl">
-          <div className="relative">
-            <img src={img.thumb} alt="attached" className="h-20 w-20 rounded-xl border border-border object-cover shadow-sm" />
-            <button
-              type="button"
-              onClick={() => setImg(null)}
-              className="absolute -right-2 -top-2 grid size-6 place-items-center rounded-full bg-foreground text-background shadow"
-              title="Remove image"
-            >
-              <X className="size-3.5" />
-            </button>
+      {dragging && (
+        <div className="pointer-events-none fixed inset-0 z-50 grid place-items-center bg-arpa/10 backdrop-blur-[2px]">
+          <div className="flex flex-col items-center gap-2 rounded-3xl border-2 border-dashed border-arpa bg-card/95 px-10 py-8 shadow-xl">
+            <Upload className="size-8 text-arpa" />
+            <p className="text-base font-semibold">Drop file to attach</p>
+            <p className="text-xs text-muted-foreground">Image, PDF, Word, Excel, PowerPoint, CSV, text or code</p>
           </div>
+        </div>
+      )}
+      {(img || file || reading) && (
+        <div className="mx-auto mb-2 flex max-w-3xl flex-wrap items-end gap-3">
+          {img && (
+            <div className="relative">
+              <img src={img.thumb} alt="attached" className="h-20 w-20 rounded-xl border border-border object-cover shadow-sm" />
+              {img.name && (
+                <span className="absolute inset-x-0 bottom-0 truncate rounded-b-xl bg-black/60 px-1 text-[10px] text-white">
+                  {img.name}{img.pages ? ` · ${Math.min(img.pages, 1 + (img.more?.length || 0))}/${img.pages} pages` : ""}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => setImg(null)}
+                className="absolute -right-2 -top-2 grid size-6 place-items-center rounded-full bg-foreground text-background shadow"
+                title="Remove image"
+              >
+                <X className="size-3.5" />
+              </button>
+            </div>
+          )}
+          {file && (
+            <div className="relative flex max-w-xs items-center gap-2.5 rounded-xl border border-border bg-card px-3 py-2.5 shadow-sm">
+              <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-arpa/15 text-arpa">
+                <FileText className="size-4.5" />
+              </div>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium" title={file.name}>{file.name}</p>
+                <p className="text-[11px] text-muted-foreground">
+                  {fmtSize(file.size)}{file.pages ? ` · ${file.pages} pages` : ""}{file.truncated ? " · large file, partly read" : ""}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFile(null)}
+                className="absolute -right-2 -top-2 grid size-6 place-items-center rounded-full bg-foreground text-background shadow"
+                title="Remove file"
+              >
+                <X className="size-3.5" />
+              </button>
+            </div>
+          )}
+          {reading && (
+            <div className="flex items-center gap-2 rounded-xl border border-dashed border-border px-3 py-2.5 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" /> Reading file…
+            </div>
+          )}
         </div>
       )}
       <div className="mx-auto flex max-w-3xl items-end gap-1.5 rounded-[26px] border border-border bg-card px-2.5 py-2 shadow-sm focus-within:ring-2 focus-within:ring-arpa">
@@ -246,19 +364,8 @@ export function Composer({
           placeholder={transcribing ? "Transcribing…" : recording ? "🎤 Recording… keep speaking" : "Ask ARPA anything"}
           className="max-h-60 flex-1 resize-none bg-transparent py-1.5 text-[15px] leading-relaxed outline-none placeholder:text-muted-foreground"
         />
-        {/* web search */}
-        <Button
-          onClick={onSearch}
-          disabled={busy}
-          size="icon"
-          variant="ghost"
-          className="size-9 shrink-0 rounded-full text-muted-foreground hover:text-cyan-500"
-          title="Web search"
-        >
-          <Globe className="size-4" />
-        </Button>
-        {/* image attach (VLM) */}
-        <ImageAttach onPick={setImg} disabled={busy} />
+        {/* attach image / file (also drag & drop or paste) */}
+        <ImageAttach onFiles={handleFiles} disabled={busy || reading} />
         {/* mic (voice input) */}
         <Button
           onClick={recording ? stopRecording : startRecording}
@@ -282,7 +389,7 @@ export function Composer({
         ) : (
           <Button
             onClick={submit}
-            disabled={disabled || (!value.trim() && !img)}
+            disabled={disabled || reading || (!value.trim() && !img && !file)}
             size="icon"
             className="size-9 shrink-0 rounded-full bg-arpa text-arpa-foreground hover:opacity-90 disabled:opacity-30"
             title="Send"

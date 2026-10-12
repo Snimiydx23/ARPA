@@ -45,6 +45,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         if (m.model) o.model = String(m.model);
         if (m.ms) o.ms = Number(m.ms);
         if (m.cut) o.cut = true;
+        if (m.file && typeof m.file.name === "string" && typeof m.file.text === "string") o.file = { name: m.file.name.slice(0, 300), text: m.file.text.slice(0, 60000), size: Number(m.file.size) || 0, pages: Number(m.file.pages) || undefined, truncated: !!m.file.truncated || m.file.text.length > 60000 };
         if (typeof m.thumb === "string" && m.thumb.startsWith("data:image/") && m.thumb.length < 80000) o.thumb = m.thumb;
         return o;
       });

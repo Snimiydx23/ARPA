@@ -179,7 +179,11 @@ export function ChatApp({ config }: { config: AppConfig }) {
   }, []);
 
   // ----- send / stream -----
-  const send = (text: string, img?: { image: string; thumb: string }) => {
+  const send = (
+    text: string,
+    img?: { image: string; thumb: string; more?: string[]; name?: string },
+    file?: { name: string; text: string; size: number; pages?: number; truncated?: boolean },
+  ) => {
     if (busy || !sub || sub.state === "expired") return;
     let chat = c;
     const isNewChat = !chat;
@@ -189,7 +193,10 @@ export function ChatApp({ config }: { config: AppConfig }) {
       setCurId(chat.id);
     }
     const chatId = chat.id;
-    const userMsg: ChatMsg = img ? { role: "user", content: text, image: img.image, thumb: img.thumb } : { role: "user", content: text };
+    const userMsg: ChatMsg = { role: "user", content: text };
+    if (img) { userMsg.image = img.image; userMsg.thumb = img.thumb; if (img.more?.length) userMsg.images = img.more; }
+    if (img?.name && !file) userMsg.content = `${text}\n\n(Attached: ${img.name})`;
+    if (file) userMsg.file = file;
     const aiMsg: ChatMsg = { role: "assistant", content: "", streaming: true, model };
     const newMsgs = [...chat.msgs, userMsg, aiMsg];
     patchChat(chatId, { msgs: newMsgs, at: Date.now() });
@@ -233,8 +240,12 @@ export function ChatApp({ config }: { config: AppConfig }) {
     base.forEach((m, i) => { if (m.role === "user" && (m.image || m.thumb)) lastImgIdx = i; });
     const hist = base.map((m, i) =>
       i === lastImgIdx
-        ? { role: m.role, content: m.content, image: m.image || m.thumb }
-        : { role: m.role, content: (m.image || m.thumb) ? m.content + "\n[an image was attached here earlier]" : m.content }
+        ? { role: m.role, content: m.content, image: m.image || m.thumb, images: m.images, file: m.file ? { name: m.file.name, text: m.file.text } : undefined }
+        : {
+            role: m.role,
+            content: (m.image || m.thumb) ? m.content + "\n[an image was attached here earlier]" : m.content,
+            file: m.file ? { name: m.file.name, text: m.file.text } : undefined,
+          }
     );
 
     const settings = settingsStore.get();

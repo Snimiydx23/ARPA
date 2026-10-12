@@ -5,11 +5,16 @@
 //   image = full-size (max 1280px JPEG) — sent to the AI for this turn
 //   thumb = small (max 320px JPEG)      — saved with the chat history + shown in bubbles
 import * as React from "react";
-import { toast } from "sonner";
-import { ImagePlus } from "lucide-react";
+import { Paperclip } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-export type PickedImage = { image: string; thumb: string };
+export type PickedImage = {
+  image: string;   // full-size data-URL (sent to AI)
+  thumb: string;   // small data-URL (saved + shown)
+  more?: string[]; // extra page images (scanned PDF pages 2..n)
+  name?: string;   // original file name (scanned PDF)
+  pages?: number;
+};
 
 const MAX_INPUT_BYTES = 15 * 1024 * 1024; // 15MB raw file (compressed before upload)
 
@@ -48,34 +53,29 @@ export async function prepareImage(f: File): Promise<PickedImage> {
   }
 }
 
+// Attach button — opens the file picker for ANY supported file (images, PDF, Word, Excel, PPT, text, code).
+// The composer decides how to read each file (see src/lib/file-extract.ts).
 export function ImageAttach({
-  onPick,
+  onFiles,
   disabled,
 }: {
-  onPick: (img: PickedImage) => void;
+  onFiles: (files: File[]) => void;
   disabled?: boolean;
 }) {
   const fileRef = React.useRef<HTMLInputElement>(null);
-
-  const onFile = async (f: File | null) => {
-    if (!f) return;
-    try {
-      onPick(await prepareImage(f));
-    } catch (e: any) {
-      toast.error(e?.message || "Image error");
-    } finally {
-      if (fileRef.current) fileRef.current.value = "";
-    }
-  };
 
   return (
     <>
       <input
         ref={fileRef}
         type="file"
-        accept="image/*"
+        multiple
         className="hidden"
-        onChange={(e) => onFile(e.target.files?.[0] || null)}
+        onChange={(e) => {
+          const files = Array.from(e.target.files || []);
+          if (files.length) onFiles(files);
+          if (fileRef.current) fileRef.current.value = "";
+        }}
       />
       <Button
         onClick={() => fileRef.current?.click()}
@@ -83,9 +83,9 @@ export function ImageAttach({
         size="icon"
         variant="ghost"
         className="size-9 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
-        title="Attach image"
+        title="Attach image or file (or drag & drop)"
       >
-        <ImagePlus className="size-4" />
+        <Paperclip className="size-4" />
       </Button>
     </>
   );

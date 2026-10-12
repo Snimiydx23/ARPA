@@ -10,7 +10,7 @@ export const CFG = {
   limitTrial: Number(process.env.DAILY_LIMIT_TRIAL || 50),
   limitPaid: Number(process.env.DAILY_LIMIT_PAID || 300),
   maxTokens: Number(process.env.MAX_TOKENS || 4096),
-  maxCtx: Number(process.env.MAX_CTX_CHARS || 60000),
+  maxCtx: Number(process.env.MAX_CTX_CHARS || 250000), // large enough for attached documents
   admins: (process.env.ADMIN_EMAILS || "").toLowerCase().split(",").map(s => s.trim()).filter(Boolean),
 };
 
