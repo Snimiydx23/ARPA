@@ -1,12 +1,12 @@
 // ARPA V3 — Prisma schema
-// Upgraded from ARPA V2 (Firebase Firestore) to Prisma + SQLite
+// Upgraded from ARPA V2 (Firebase Firestore) to Prisma + PostgreSQL (Vercel needs a hosted DB; SQLite file is read-only there)
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
