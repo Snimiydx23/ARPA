@@ -45,6 +45,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         if (m.model) o.model = String(m.model);
         if (m.ms) o.ms = Number(m.ms);
         if (m.cut) o.cut = true;
+        if (typeof m.thumb === "string" && m.thumb.startsWith("data:image/") && m.thumb.length < 80000) o.thumb = m.thumb;
         return o;
       });
     data.msgs = JSON.stringify(msgs);

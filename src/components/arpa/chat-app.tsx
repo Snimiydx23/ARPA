@@ -179,7 +179,7 @@ export function ChatApp({ config }: { config: AppConfig }) {
   }, []);
 
   // ----- send / stream -----
-  const send = (text: string) => {
+  const send = (text: string, img?: { image: string; thumb: string }) => {
     if (busy || !sub || sub.state === "expired") return;
     let chat = c;
     const isNewChat = !chat;
@@ -189,7 +189,7 @@ export function ChatApp({ config }: { config: AppConfig }) {
       setCurId(chat.id);
     }
     const chatId = chat.id;
-    const userMsg: ChatMsg = { role: "user", content: text };
+    const userMsg: ChatMsg = img ? { role: "user", content: text, image: img.image, thumb: img.thumb } : { role: "user", content: text };
     const aiMsg: ChatMsg = { role: "assistant", content: "", streaming: true, model };
     const newMsgs = [...chat.msgs, userMsg, aiMsg];
     patchChat(chatId, { msgs: newMsgs, at: Date.now() });
@@ -227,9 +227,15 @@ export function ChatApp({ config }: { config: AppConfig }) {
     const ac = new AbortController();
     setBusy(true, ac);
     const t0 = Date.now();
-    const hist = msgs.slice(0, -1)
-      .filter((m) => !m.error && m.content)
-      .map((m) => ({ role: m.role, content: m.content }));
+    const base = msgs.slice(0, -1).filter((m) => !m.error && m.content);
+    // send only the most recent image (full-size if still in memory, else the saved thumbnail)
+    let lastImgIdx = -1;
+    base.forEach((m, i) => { if (m.role === "user" && (m.image || m.thumb)) lastImgIdx = i; });
+    const hist = base.map((m, i) =>
+      i === lastImgIdx
+        ? { role: m.role, content: m.content, image: m.image || m.thumb }
+        : { role: m.role, content: (m.image || m.thumb) ? m.content + "\n[an image was attached here earlier]" : m.content }
+    );
 
     const settings = settingsStore.get();
     // V3.5: fetch the chat's custom systemPrompt before the request

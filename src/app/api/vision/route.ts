@@ -1,6 +1,6 @@
 // POST /api/vision — image understanding (V3.2 VLM).
 // Body: { image: "<data-url or base64 or http url>", prompt? } → { ok, text }
-// Uses an NVIDIA NIM vision model (VISION_MODEL env, default meta/llama-3.2-90b-vision-instruct).
+// Uses an NVIDIA NIM vision model (VISION_MODEL env, default moonshotai/kimi-k3).
 import { bearerUid, json } from "@/lib/arpa";
 import { nvComplete, VISION_MODEL } from "@/lib/llm";
 

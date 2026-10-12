@@ -20,6 +20,8 @@ export type ChatMsg = {
   streaming?: boolean;
   edited?: boolean;
   reaction?: "up" | "down" | null;
+  image?: string; // full-size data-URL, only in memory for the turn it was sent
+  thumb?: string; // small data-URL, persisted with chat history
 };
 export type Chat = {
   id: string;
@@ -43,6 +45,8 @@ export type AppConfig = {
   models: Model[];
   support: string;
   paymentMode: "live" | "simulated";
+  googleClientId?: string;
+  emailLogin?: boolean;
 };
 
 const TOKEN_KEY = "arpa_token";
@@ -99,7 +103,7 @@ export async function api<T = any>(
 
 // SSE streaming fetch — returns the reader + headers
 export async function streamChat(
-  body: { messages: { role: string; content: string }[]; model: string; temperature?: number; systemPrompt?: string },
+  body: { messages: { role: string; content: string; image?: string }[]; model: string; temperature?: number; systemPrompt?: string },
   signal: AbortSignal
 ): Promise<{ response: Response }> {
   const token = tokenStore.get();

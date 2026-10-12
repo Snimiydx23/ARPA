@@ -3,11 +3,12 @@
 // Env:
 //   NVIDIA_API_KEY   (required)  — from build.nvidia.com → "Get API Key"
 //   NVIDIA_BASE_URL  (optional)  — default https://integrate.api.nvidia.com/v1
-//   VISION_MODEL     (optional)  — default meta/llama-3.2-90b-vision-instruct
+//   VISION_MODEL     (optional)  — multimodal model for image turns, default moonshotai/kimi-k3
+//   VISION_REASONING_EFFORT (optional) — e.g. "low" to make image answers faster (sent as reasoning_effort)
 //   TITLE_MODEL      (optional)  — model for auto chat titles (default = first model in MODELS)
 
 export const NV_BASE = (process.env.NVIDIA_BASE_URL || "https://integrate.api.nvidia.com/v1").replace(/\/+$/, "");
-export const VISION_MODEL = process.env.VISION_MODEL || "meta/llama-3.2-90b-vision-instruct";
+export const VISION_MODEL = process.env.VISION_MODEL || "moonshotai/kimi-k3";
 
 export type ChatMsg = { role: "system" | "user" | "assistant"; content: any };
 

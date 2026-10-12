@@ -2,10 +2,10 @@
 // ARPA V3.2 — chat composer with voice input, image attach, web search, settings.
 import * as React from "react";
 import { toast } from "sonner";
-import { ArrowUp, Square, Lock, Mic, Settings2, Loader2, Globe } from "lucide-react";
+import { ArrowUp, Square, Lock, Mic, Settings2, Loader2, Globe, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/arpa-client";
-import { ImageAttach } from "./image-attach";
+import { ImageAttach, prepareImage, type PickedImage } from "./image-attach";
 
 export function Composer({
   busy,
@@ -24,7 +24,7 @@ export function Composer({
   locked: boolean;
   lockText: string;
   lockSub: string;
-  onSend: (text: string) => void;
+  onSend: (text: string, img?: PickedImage) => void;
   onStop: () => void;
   onPlans: () => void;
   onSettings: () => void;
@@ -36,6 +36,8 @@ export function Composer({
   const taRef = React.useRef<HTMLTextAreaElement>(null);
   const mediaRef = React.useRef<MediaRecorder | null>(null);
   const chunksRef = React.useRef<Blob[]>([]);
+  const [img, setImg] = React.useState<PickedImage | null>(null);
+  const recogRef = React.useRef<any>(null);
 
   const grow = () => {
     const ta = taRef.current;
@@ -65,9 +67,10 @@ export function Composer({
 
   const submit = () => {
     const t = value.trim();
-    if (!t || busy) return;
-    onSend(t);
+    if ((!t && !img) || busy) return;
+    onSend(t || "Describe this image.", img || undefined);
     setValue("");
+    setImg(null);
     requestAnimationFrame(grow);
   };
 
@@ -84,7 +87,51 @@ export function Composer({
     });
   };
 
+  // paste an image (Ctrl+V / screenshot) directly into the composer
+  const onPaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const item = Array.from(e.clipboardData?.items || []).find((i) => i.type.startsWith("image/"));
+    if (!item) return;
+    const f = item.getAsFile();
+    if (!f) return;
+    e.preventDefault();
+    try { setImg(await prepareImage(f)); } catch (err: any) { toast.error(err?.message || "Image error"); }
+  };
+
+  // Browser speech recognition (Chrome / Edge / Android) — free, no API key.
+  const getSpeechRecognition = (): any =>
+    typeof window !== "undefined" ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition : null;
+
+  const startBrowserSpeech = (SR: any) => {
+    const rec = new SR();
+    rec.lang = "en-IN"; // Indian English — Hinglish speech comes out in Roman script
+    rec.continuous = true;
+    rec.interimResults = false;
+    rec.onresult = (ev: any) => {
+      let txt = "";
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        if (ev.results[i].isFinal) txt += ev.results[i][0].transcript;
+      }
+      txt = txt.trim();
+      if (txt) {
+        setValue((v) => (v ? v.replace(/\s*$/, " ") : "") + txt);
+        requestAnimationFrame(grow);
+      }
+    };
+    rec.onerror = (ev: any) => {
+      if (ev?.error === "not-allowed") toast.error("Mic permission denied.");
+      else if (ev?.error !== "no-speech" && ev?.error !== "aborted") toast.error("Voice error: " + (ev?.error || "unknown"));
+    };
+    rec.onend = () => { recogRef.current = null; setRecording(false); };
+    recogRef.current = rec;
+    rec.start();
+    setRecording(true);
+  };
+
   const startRecording = async () => {
+    const SR = getSpeechRecognition();
+    if (SR) {
+      try { startBrowserSpeech(SR); return; } catch { /* fall back to server ASR below */ }
+    }
     if (!navigator.mediaDevices?.getUserMedia) {
       toast.error("Your browser does not support microphone input.");
       return;
@@ -132,6 +179,7 @@ export function Composer({
   };
 
   const stopRecording = () => {
+    if (recogRef.current) { try { recogRef.current.stop(); } catch {} recogRef.current = null; }
     if (mediaRef.current && mediaRef.current.state !== "inactive") {
       mediaRef.current.stop();
     }
@@ -157,6 +205,21 @@ export function Composer({
 
   return (
     <div className="relative px-3 pb-3 sm:px-4">
+      {img && (
+        <div className="mx-auto mb-2 flex max-w-3xl">
+          <div className="relative">
+            <img src={img.thumb} alt="attached" className="h-20 w-20 rounded-xl border border-border object-cover shadow-sm" />
+            <button
+              type="button"
+              onClick={() => setImg(null)}
+              className="absolute -right-2 -top-2 grid size-6 place-items-center rounded-full bg-foreground text-background shadow"
+              title="Remove image"
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
       <div className="mx-auto flex max-w-3xl items-end gap-1.5 rounded-[26px] border border-border bg-card px-2.5 py-2 shadow-sm focus-within:ring-2 focus-within:ring-arpa">
         {/* settings gear (left) */}
         <Button
@@ -172,6 +235,7 @@ export function Composer({
           ref={taRef}
           value={value}
           onChange={(e) => setValue(e.target.value)}
+          onPaste={onPaste}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && window.innerWidth > 820) {
               e.preventDefault();
@@ -194,7 +258,7 @@ export function Composer({
           <Globe className="size-4" />
         </Button>
         {/* image attach (VLM) */}
-        <ImageAttach onInsert={insertText} disabled={busy} />
+        <ImageAttach onPick={setImg} disabled={busy} />
         {/* mic (voice input) */}
         <Button
           onClick={recording ? stopRecording : startRecording}
@@ -218,7 +282,7 @@ export function Composer({
         ) : (
           <Button
             onClick={submit}
-            disabled={disabled || !value.trim()}
+            disabled={disabled || (!value.trim() && !img)}
             size="icon"
             className="size-9 shrink-0 rounded-full bg-arpa text-arpa-foreground hover:opacity-90 disabled:opacity-30"
             title="Send"

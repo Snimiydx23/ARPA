@@ -1,7 +1,7 @@
 // POST /api/chat — AI streaming chat (V3: replaces V2 api/chat.js)
 // Uses NVIDIA Nemotron via NIM's OpenAI-compatible API (src/lib/llm.ts).
 // Upstream SSE is parsed and re-emitted as per-token SSE in the same format the client expects.
-import { nvChat, noThinking } from "@/lib/llm";
+import { nvChat, noThinking, VISION_MODEL } from "@/lib/llm";
 import { db } from "@/lib/db";
 import {
   CFG, models, bearerUid, status, takeQuota, json, systemPrompt,
@@ -52,7 +52,14 @@ export async function POST(req: Request) {
   // History trim — keep recent messages within context budget
   const msgs = (Array.isArray(body.messages) ? body.messages : [])
     .filter((m: any) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim())
-    .map((m: any) => ({ role: m.role as string, content: m.content.slice(0, 40000) }));
+    .map((m: any) => {
+      const o: { role: string; content: string; image?: string } = { role: m.role as string, content: m.content.slice(0, 40000) };
+      // optional attached image (data-URL) on user messages — max ~6MB
+      if (m.role === "user" && typeof m.image === "string" && /^data:image\/[a-z+]+;base64,/i.test(m.image) && m.image.length < 6_000_000) {
+        o.image = m.image;
+      }
+      return o;
+    });
   if (!msgs.length || msgs[msgs.length - 1].role !== "user") {
     return json({ error: "Message is empty" }, 400);
   }
@@ -68,10 +75,22 @@ export async function POST(req: Request) {
   if (customPrompt.trim()) {
     basePrompt += `\n\nADDITIONAL PERSONA/INSTRUCTIONS FOR THIS CHAT:\n${customPrompt.trim()}`;
   }
+  const recent = msgs.slice(start);
+  // if any message in context carries an image → use the multimodal model for this turn
+  const hasImage = recent.some((m: any) => m.image);
+  const useModel = hasImage ? VISION_MODEL : model;
   const messages = [
     { role: "system", content: basePrompt },
-    ...msgs.slice(start),
+    ...recent.map((m: any) =>
+      m.image
+        ? { role: m.role, content: [{ type: "text", text: m.content }, { type: "image_url", image_url: { url: m.image } }] }
+        : { role: m.role, content: m.content }
+    ),
   ];
+  // per-model extras: Nemotron → thinking off; vision model → optional reasoning_effort
+  const extras: Record<string, unknown> = hasImage
+    ? (process.env.VISION_REASONING_EFFORT ? { reasoning_effort: process.env.VISION_REASONING_EFFORT } : {})
+    : noThinking;
 
   // Build SSE stream from NVIDIA NIM and re-emit per-token `data:` frames.
   const encoder = new TextEncoder();
@@ -82,13 +101,13 @@ export async function POST(req: Request) {
       };
       try {
         const upstream = await nvChat({
-          model,
+          model: useModel,
           messages,
           stream: true,
-          temperature,
+          temperature: hasImage ? 0.6 : temperature,
           top_p: 0.95,
           max_tokens: CFG.maxTokens,
-          ...noThinking,
+          ...extras,
         }, req.signal);
 
         let buf = "";
@@ -137,7 +156,7 @@ export async function POST(req: Request) {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache, no-transform",
       "x-accel-buffering": "no",
-      "x-arpa-model": list.find(m => m.id === model)?.label || model,
+      "x-arpa-model": hasImage ? "ARPA Vision" : (list.find(m => m.id === model)?.label || model),
       "x-arpa-used": String(q.used),
       "x-arpa-limit": String(st.limit),
     },

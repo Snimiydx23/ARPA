@@ -50,6 +50,7 @@ export async function POST(req: Request) {
           if (m.ms) o.ms = Number(m.ms);
           if (m.edited) o.edited = true;
           if (m.reaction === "up" || m.reaction === "down") o.reaction = m.reaction;
+          if (typeof m.thumb === "string" && m.thumb.startsWith("data:image/") && m.thumb.length < 80000) o.thumb = m.thumb;
           return o;
         })
     : [];

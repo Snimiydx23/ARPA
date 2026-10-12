@@ -70,6 +70,9 @@ export function MessageBubble({
       <div className="group mb-6 flex justify-end animate-msg-in">
         <div className="flex max-w-[85%] flex-col items-end gap-1 sm:max-w-[80%]">
           {msg.edited && <span className="px-1 text-[10px] italic text-muted-foreground">edited</span>}
+          {(msg.image || msg.thumb) && (
+            <img src={msg.image || msg.thumb} alt="attached" className="max-h-56 max-w-[240px] rounded-2xl border border-border object-cover" />
+          )}
           <div className="whitespace-pre-wrap break-words rounded-2xl bg-[var(--user-bubble)] px-4 py-2.5 text-[15px] leading-relaxed text-[var(--user-bubble-foreground)]">
             {msg.content}
           </div>
