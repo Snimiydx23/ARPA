@@ -10,7 +10,7 @@ import { Landing } from "@/components/arpa/landing";
 import { ChatApp, BootScreen } from "@/components/arpa/chat-app";
 import { SharedChat } from "@/components/arpa/shared-chat";
 
-export default function Home() {
+function HomeInner() {
   const { config, user, booting, setConfig, setSession, setAuthError } = useArpa();
   const searchParams = useSearchParams();
   const shareToken = searchParams.get("share");
@@ -63,4 +63,13 @@ export default function Home() {
   if (booting || !config) return <BootScreen />;
   if (!user) return <Landing config={config} />;
   return <ChatApp config={config} />;
+}
+
+// useSearchParams() needs a Suspense boundary for static prerender (Next.js 15+/16)
+export default function Home() {
+  return (
+    <React.Suspense fallback={<BootScreen />}>
+      <HomeInner />
+    </React.Suspense>
+  );
 }
