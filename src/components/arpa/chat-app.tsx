@@ -5,8 +5,11 @@
 // V3.3: chat sharing (public link), conversation tags, command palette (Cmd+/), share/tags dialogs.
 import * as React from "react";
 import { toast } from "sonner";
-import { Menu, Plus, Sparkles, CalendarClock, Loader2, ArrowDown, Download, Settings2, Command, Share2, Search, Bot, Keyboard, Bookmark, Printer } from "lucide-react";
+import { Menu, Plus, Sparkles, CalendarClock, Loader2, ArrowDown, Download, Settings2, Command, Share2, Search, Bot, Keyboard, Bookmark, Printer, FileText, FileDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
 import { useArpa, selectCurChat } from "@/lib/store";
@@ -65,6 +68,9 @@ function RotatingTip() {
     </p>
   );
 }
+
+// user asked for a document → show "Download Word / PDF" buttons under the reply
+const DOC_REQUEST_RE = /\b(word|docx|pdf|document|doc|letter|report|proposal|application|notice|agreement|draft|minutes|resolution|cv|resume|format)\b|(?:दस्तावेज़|पत्र|रिपोर्ट)/i;
 
 export function ChatApp({ config }: { config: AppConfig }) {
   const {
@@ -416,6 +422,19 @@ export function ChatApp({ config }: { config: AppConfig }) {
     toast.success("Chat exported (.json)");
   };
 
+  // Word / PDF download of the whole current chat
+  const downloadCurrentDoc = async (format: "docx" | "pdf") => {
+    if (!c) { toast.error("No chat open right now"); return; }
+    const t = toast.loading(format === "docx" ? "Creating Word file…" : "Creating PDF…");
+    try {
+      const { downloadChat } = await import("@/lib/doc-export");
+      await downloadChat(format, c.title, c.msgs.filter((m) => !m.streaming).map((m) => ({ role: m.role, content: m.content, error: m.error })));
+      toast.success(format === "docx" ? "Word file downloaded ✓" : "PDF downloaded ✓", { id: t });
+    } catch (e: any) {
+      toast.error(e?.message || "Could not create the file", { id: t });
+    }
+  };
+
   const exportCurrent = () => {
     if (!c) { toast.error("No chat open right now"); return; }
     exportChat(c.id);
@@ -641,9 +660,29 @@ export function ChatApp({ config }: { config: AppConfig }) {
             </Button>
           )}
           {c && (
-            <Button size="icon" variant="ghost" onClick={exportCurrent} title="Export chat (.md)" className="hidden sm:inline-flex">
-              <Download className="size-4" />
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="icon" variant="ghost" title="Download chat (Word / PDF / Markdown)" className="hidden sm:inline-flex">
+                  <Download className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[190px]">
+                <DropdownMenuLabel className="text-xs">Download this chat</DropdownMenuLabel>
+                <DropdownMenuItem onSelect={() => downloadCurrentDoc("docx")} className="gap-2">
+                  <FileText className="size-3.5 text-blue-600" /> Word (.docx)
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => downloadCurrentDoc("pdf")} className="gap-2">
+                  <FileDown className="size-3.5 text-rose-600" /> PDF
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={exportCurrent} className="gap-2">
+                  <Download className="size-3.5" /> Markdown (.md)
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => exportChatJson(c.id)} className="gap-2">
+                  <Download className="size-3.5" /> JSON (backup)
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
           <Button size="icon" variant="ghost" onClick={() => setPaletteOpen(true)} title="Command palette (Ctrl+/)" className="md:hidden">
             <Command className="size-4" />
@@ -736,6 +775,8 @@ export function ChatApp({ config }: { config: AppConfig }) {
                         onBranch={() => onBranch(i)}
                         onReaction={m.role === "assistant" ? (r) => onReaction(i, r) : undefined}
                         searchQuery={chatSearchOpen ? chatSearchQuery : undefined}
+                        wantsDoc={m.role === "assistant" && c.msgs[i - 1]?.role === "user" && DOC_REQUEST_RE.test(c.msgs[i - 1].content)}
+                        docFallbackTitle={m.role === "assistant" && c.msgs[i - 1]?.role === "user" ? c.msgs[i - 1].content.replace(/\s+/g, " ").slice(0, 70) : undefined}
                       />
                     </div>
                   </React.Fragment>

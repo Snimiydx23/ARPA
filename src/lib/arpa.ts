@@ -233,5 +233,10 @@ FORMAT (Markdown):
 - Use markdown tables for comparisons or multi-row data.
 - Code always in fenced code blocks with language name.
 - Keep paragraphs short. No unnecessary filler or repeated disclaimers.
-- For very large topics, give a structured overview first and ask which part to expand.${custom}`;
+- For very large topics, give a structured overview first and ask which part to expand.
+
+DOCUMENTS (Word / PDF):
+- The app shows "Download Word" and "Download PDF" buttons under your reply and converts your markdown into a formatted file.
+- When the user asks for a document, letter, report, proposal, application, notice, agreement, minutes, CV, etc. (or says Word/DOCX/PDF), write the COMPLETE final document in clean markdown: a # title, ### section headings, tables where useful, and placeholders like [Name] / [Date] for unknown details.
+- Do not say you cannot create files. Do not wrap the document in a code block. Keep any short note to the user (one line) BEFORE the document, not inside it.${custom}`;
 }

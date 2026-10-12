@@ -3,7 +3,7 @@
 import { fmtSize } from "@/lib/file-extract";
 import * as React from "react";
 import { toast } from "sonner";
-import { Check, Copy, RefreshCw, Play, AlertTriangle, Volume2, Square, Loader2, Pencil, GitFork, ChevronDown, ThumbsUp, ThumbsDown, FileText } from "lucide-react";
+import { Check, Copy, RefreshCw, Play, AlertTriangle, Volume2, Square, Loader2, Pencil, GitFork, ChevronDown, ThumbsUp, ThumbsDown, FileText, FileDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -42,6 +42,8 @@ export function MessageBubble({
   models,
   curModel,
   searchQuery,
+  wantsDoc,
+  docFallbackTitle,
 }: {
   msg: ChatMsg;
   isLast: boolean;
@@ -54,12 +56,31 @@ export function MessageBubble({
   models?: Model[];
   curModel?: string;
   searchQuery?: string;
+  wantsDoc?: boolean; // previous user message asked for a document → show download buttons prominently
+  docFallbackTitle?: string;
 }) {
   const [copied, setCopied] = React.useState(false);
   const [ttsState, setTtsState] = React.useState<"idle" | "loading" | "playing">("idle");
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState("");
+  const [docBusy, setDocBusy] = React.useState<"" | "docx" | "pdf">("");
+
+  // Word / PDF download of this answer
+  const downloadDoc = async (format: "docx" | "pdf") => {
+    if (!msg.content || docBusy) return;
+    setDocBusy(format);
+    try {
+      const { downloadAnswer, titleFromMarkdown } = await import("@/lib/doc-export");
+      const hasHeading = /^#{1,3}\s+/m.test(msg.content);
+      await downloadAnswer(format, msg.content, hasHeading ? titleFromMarkdown(msg.content) : (docFallbackTitle || titleFromMarkdown(msg.content)));
+      toast.success(format === "docx" ? "Word file downloaded ✓" : "PDF downloaded ✓");
+    } catch (e: any) {
+      toast.error(e?.message || "Could not create the file");
+    } finally {
+      setDocBusy("");
+    }
+  };
 
   // stop TTS if unmounted or msg changes
   React.useEffect(() => {
@@ -301,8 +322,19 @@ export function MessageBubble({
         A
       </div>
       <div className="min-w-0 flex-1">{body}
+      {/* prominent Word / PDF buttons when the user asked for a document */}
+      {!msg.streaming && wantsDoc && msg.content && !msg.error && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" className="h-8 gap-1.5 rounded-full" onClick={() => downloadDoc("docx")} disabled={!!docBusy}>
+            {docBusy === "docx" ? <Loader2 className="size-3.5 animate-spin" /> : <FileText className="size-3.5 text-blue-600" />} Download Word
+          </Button>
+          <Button size="sm" variant="outline" className="h-8 gap-1.5 rounded-full" onClick={() => downloadDoc("pdf")} disabled={!!docBusy}>
+            {docBusy === "pdf" ? <Loader2 className="size-3.5 animate-spin" /> : <FileDown className="size-3.5 text-rose-600" />} Download PDF
+          </Button>
+        </div>
+      )}
       {!msg.streaming && (
-        <div className="mt-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 data-[playing]:opacity-100" data-playing={ttsState === "playing" || undefined}>
+        <div className="mt-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 data-[playing]:opacity-100" data-playing={ttsState === "playing" || !!docBusy || undefined}>
           {msg.content && (
             <>
               <Button size="icon" variant="ghost" className="size-7 text-muted-foreground hover:text-foreground" onClick={doCopy} title="Copy">
@@ -318,6 +350,23 @@ export function MessageBubble({
               >
                 {ttsState === "loading" ? <Loader2 className="size-3.5 animate-spin" /> : ttsState === "playing" ? <Square className="size-3.5" /> : <Volume2 className="size-3.5" />}
               </Button>
+              {/* download this answer as Word / PDF */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="icon" variant="ghost" className="size-7 text-muted-foreground hover:text-foreground" title="Download as Word / PDF" disabled={!!docBusy}>
+                    {docBusy ? <Loader2 className="size-3.5 animate-spin" /> : <FileDown className="size-3.5" />}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="min-w-[180px]">
+                  <DropdownMenuLabel className="text-xs">Download this answer</DropdownMenuLabel>
+                  <DropdownMenuItem onSelect={() => downloadDoc("docx")} className="gap-2">
+                    <FileText className="size-3.5 text-blue-600" /> Word (.docx)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => downloadDoc("pdf")} className="gap-2">
+                    <FileDown className="size-3.5 text-rose-600" /> PDF
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </>
           )}
           {/* V3.7: message reactions (thumbs up/down) */}
