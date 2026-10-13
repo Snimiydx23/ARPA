@@ -80,17 +80,30 @@ async function generate(model: string, prompt: string, w: number, h: number, see
       ? { prompt, width: w, height: h, seed, steps: 4 }
       : { prompt, mode: "base", cfg_scale: 3.5, width: w, height: h, seed, steps: 20 };
   const started = Date.now();
-  const headers = { Authorization: `Bearer ${key}`, Accept: "application/json", "Content-Type": "application/json", "NVCF-POLL-SECONDS": "30" };
-  let r = await fetch(`https://ai.api.nvidia.com/v1/genai/${model}`, { method: "POST", headers, body: JSON.stringify(body) });
-  // NVIDIA cloud functions answer 202 + NVCF-REQID when the job is queued → poll until it is done
-  while (r.status === 202) {
-    const reqId = r.headers.get("nvcf-reqid");
-    if (!reqId) break;
-    if (Date.now() - started > GEN_DEADLINE_MS) throw new Error("The image service is very busy right now. Please try again in a minute.");
-    await sleep(1500);
-    r = await fetch(`https://api.nvcf.nvidia.com/v2/nvcf/pexec/status/${reqId}`, {
-      headers: { Authorization: `Bearer ${key}`, Accept: "application/json", "NVCF-POLL-SECONDS": "30" },
-    });
+  // Short hold time: NVIDIA's gateway cuts long-held requests at ~30s with an empty 504.
+  // With 5s, a slow job comes back as 202 + NVCF-REQID and we poll for the result instead.
+  const headers = { Authorization: `Bearer ${key}`, Accept: "application/json", "Content-Type": "application/json", "NVCF-POLL-SECONDS": "5" };
+  const post = () => fetch(`https://ai.api.nvidia.com/v1/genai/${model}`, { method: "POST", headers, body: JSON.stringify(body) });
+  let r = await post();
+  for (let attempt = 1; ; attempt++) {
+    // NVIDIA cloud functions answer 202 + NVCF-REQID when the job is queued → poll until it is done
+    while (r.status === 202) {
+      const reqId = r.headers.get("nvcf-reqid");
+      if (!reqId) break;
+      if (Date.now() - started > GEN_DEADLINE_MS) throw new Error("The image service is very busy right now. Please try again in a minute.");
+      await sleep(1000);
+      r = await fetch(`https://api.nvcf.nvidia.com/v2/nvcf/pexec/status/${reqId}`, {
+        headers: { Authorization: `Bearer ${key}`, Accept: "application/json", "NVCF-POLL-SECONDS": "5" },
+      });
+    }
+    // gateway timeout / temporary unavailability (cold model) → retry a couple of times
+    if ([502, 503, 504].includes(r.status) && attempt < 3 && Date.now() - started < GEN_DEADLINE_MS - 40_000) {
+      console.warn(`[imagine] ${model} → HTTP ${r.status}, retrying (attempt ${attempt + 1})`);
+      await sleep(2000);
+      r = await post();
+      continue;
+    }
+    break;
   }
   const txt = await r.text();
   let j: any = {};
@@ -99,6 +112,7 @@ async function generate(model: string, prompt: string, w: number, h: number, see
     console.error(`[imagine] ${model} → HTTP ${r.status}: ${txt.slice(0, 500)}`);
     if (r.status === 401 || r.status === 403) throw new Error(`Image model ${model} is not enabled for your NVIDIA key (HTTP ${r.status}).`);
     if (r.status === 429) throw new Error("Image service is busy (rate limit). Please try again in a minute.");
+    if ([502, 503, 504].includes(r.status)) throw new Error("NVIDIA's image service is busy or starting up right now. Please press Regenerate in a minute.");
     const detail = typeof j?.detail === "string" ? j.detail : j?.detail ? JSON.stringify(j.detail).slice(0, 200) : "";
     throw new Error(`${model.split("/").pop()}: ${detail || j?.title || j?.error?.message || `HTTP ${r.status}`}`);
   }
