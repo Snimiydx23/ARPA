@@ -13,7 +13,7 @@ import { nvChat, noThinking } from "@/lib/llm";
 
 export const maxDuration = 300;
 
-const ENHANCE_TIMEOUT_MS = Number(process.env.IMAGE_ENHANCE_TIMEOUT_MS || 12000); // prompt rewrite budget
+const ENHANCE_TIMEOUT_MS = Number(process.env.IMAGE_ENHANCE_TIMEOUT_MS || 8000); // prompt rewrite budget
 const GEN_DEADLINE_MS = 240_000; // total time we wait for FLUX (incl. NVCF polling)
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -78,7 +78,7 @@ async function generate(model: string, prompt: string, w: number, h: number, see
     ? { prompt, cfg_scale: 5, aspect_ratio: w === h ? "1:1" : w > h ? "16:9" : "9:16", seed, steps: 40, negative_prompt: "blurry, low quality, distorted, watermark" }
     : isSchnell
       ? { prompt, width: w, height: h, seed, steps: 4 }
-      : { prompt, mode: "base", cfg_scale: 3.5, width: w, height: h, seed, steps: 30 };
+      : { prompt, mode: "base", cfg_scale: 3.5, width: w, height: h, seed, steps: 20 };
   const started = Date.now();
   const headers = { Authorization: `Bearer ${key}`, Accept: "application/json", "Content-Type": "application/json", "NVCF-POLL-SECONDS": "30" };
   let r = await fetch(`https://ai.api.nvidia.com/v1/genai/${model}`, { method: "POST", headers, body: JSON.stringify(body) });
@@ -140,15 +140,27 @@ export async function POST(req: Request) {
     const { prompt, aspect: autoAspect } = await enhance(text);
     const aspect = SIZES[body?.aspect] ? body.aspect : autoAspect;
     const [w, h] = SIZES[aspect];
-    const chain = [...new Set(body?.quality === "hd" ? [HD, FAST, BACKUP] : [FAST, HD, BACKUP])];
-    const seed = Number.isInteger(body?.seed) ? body.seed : Math.floor(Math.random() * 2_147_483_647);
+    // Default: FLUX.1-schnell only (fast, 4 steps). "HD" uses FLUX.1-dev.
+    // Set IMAGE_FALLBACK=true to also try the other models when the first one fails.
+    const primary = body?.quality === "hd" ? HD : FAST;
+    const chain = process.env.IMAGE_FALLBACK === "true"
+      ? [...new Set([primary, FAST, HD, BACKUP])]
+      : [primary];
+    const seed = Number.isInteger(body?.seed) ? body.seed : Math.floor(Math.random() * 1_000_000);
     // try each image model in turn (a model may be disabled for the key, busy, or renamed)
     let g: Awaited<ReturnType<typeof generate>> | null = null;
     let model = chain[0];
     const errors: string[] = [];
     for (const m of chain) {
-      try { g = await generate(m, prompt, w, h, seed); model = m; break; }
+      const t0 = Date.now();
+      try {
+        g = await generate(m, prompt, w, h, seed);
+        model = m;
+        console.log(`[imagine] ${m} ok in ${Date.now() - t0}ms`);
+        break;
+      }
       catch (e: any) {
+        console.error(`[imagine] ${m} failed after ${Date.now() - t0}ms: ${e?.message || e}`);
         errors.push(e?.message || String(e));
         if (e?.filtered) throw e; // safety block → don't retry with another model
       }
