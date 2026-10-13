@@ -19,6 +19,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const FAST = process.env.IMAGE_MODEL_FAST || "black-forest-labs/flux.1-schnell";
 const HD = process.env.IMAGE_MODEL_HD || "black-forest-labs/flux.1-dev";
+const BACKUP = process.env.IMAGE_MODEL_BACKUP || "stabilityai/stable-diffusion-3-medium";
+const MAX_PROMPT_CHARS = 600; // image APIs reject / truncate very long prompts
 const SIZES: Record<string, [number, number]> = {
   square: [1024, 1024],
   portrait: [768, 1344],
@@ -46,7 +48,7 @@ async function enhance(text: string): Promise<{ prompt: string; aspect: string }
           role: "system",
           content:
             "You convert a user's image request (may be Hindi, Hinglish or English) into ONE detailed English prompt for a text-to-image model (FLUX). " +
-            "Keep every subject, text, colour, style and detail the user asked for; add useful details about composition, lighting, style and quality. " +
+            "Keep every subject, text, colour, style and detail the user asked for; add a few useful details about composition, lighting and style. Keep it UNDER 70 words. " +
             "If the user wants text/words in the image (logo name, poster title), keep that exact text in double quotes. " +
             "Choose aspect: square (logos, icons, avatars, general), portrait (posters, phone wallpapers, stories), landscape (banners, thumbnails, scenery, desktop wallpapers). " +
             'Reply ONLY with JSON: {"prompt":"...","aspect":"square|portrait|landscape"}',
@@ -58,22 +60,25 @@ async function enhance(text: string): Promise<{ prompt: string; aspect: string }
     const j = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
     const prompt = String(j.prompt || "").trim();
     const aspect = SIZES[j.aspect] ? j.aspect : guessAspect;
-    if (prompt.length > 3) return { prompt: prompt.slice(0, 1500), aspect: guessAspect !== "square" ? guessAspect : aspect };
+    if (prompt.length > 3) return { prompt: prompt.slice(0, MAX_PROMPT_CHARS), aspect: guessAspect !== "square" ? guessAspect : aspect };
   } catch {
     // slow / failed rewrite → just use the user's own words
   } finally {
     clearTimeout(timer);
   }
-  return { prompt: text.slice(0, 1500), aspect: guessAspect };
+  return { prompt: text.slice(0, MAX_PROMPT_CHARS), aspect: guessAspect };
 }
 
 async function generate(model: string, prompt: string, w: number, h: number, seed: number) {
   const key = process.env.IMAGE_API_KEY || process.env.NVIDIA_API_KEY;
   if (!key) throw new Error("NVIDIA_API_KEY is not set on the server.");
   const isSchnell = /schnell/i.test(model);
-  const body: Record<string, unknown> = isSchnell
-    ? { prompt, width: w, height: h, seed, steps: 4 }
-    : { prompt, mode: "base", cfg_scale: 3.5, width: w, height: h, seed, steps: 30 };
+  const isSD = /stable-diffusion|sdxl|sd3/i.test(model);
+  const body: Record<string, unknown> = isSD
+    ? { prompt, cfg_scale: 5, aspect_ratio: w === h ? "1:1" : w > h ? "16:9" : "9:16", seed, steps: 40, negative_prompt: "blurry, low quality, distorted, watermark" }
+    : isSchnell
+      ? { prompt, width: w, height: h, seed, steps: 4 }
+      : { prompt, mode: "base", cfg_scale: 3.5, width: w, height: h, seed, steps: 30 };
   const started = Date.now();
   const headers = { Authorization: `Bearer ${key}`, Accept: "application/json", "Content-Type": "application/json", "NVCF-POLL-SECONDS": "30" };
   let r = await fetch(`https://ai.api.nvidia.com/v1/genai/${model}`, { method: "POST", headers, body: JSON.stringify(body) });
@@ -91,17 +96,25 @@ async function generate(model: string, prompt: string, w: number, h: number, see
   let j: any = {};
   try { j = JSON.parse(txt); } catch {}
   if (!r.ok) {
-    if (r.status === 401 || r.status === 403) throw new Error("Image API key invalid or this model is not enabled for your NVIDIA key.");
+    console.error(`[imagine] ${model} → HTTP ${r.status}: ${txt.slice(0, 500)}`);
+    if (r.status === 401 || r.status === 403) throw new Error(`Image model ${model} is not enabled for your NVIDIA key (HTTP ${r.status}).`);
     if (r.status === 429) throw new Error("Image service is busy (rate limit). Please try again in a minute.");
-    throw new Error(j?.detail || j?.title || j?.error?.message || `Image API error ${r.status}`);
+    const detail = typeof j?.detail === "string" ? j.detail : j?.detail ? JSON.stringify(j.detail).slice(0, 200) : "";
+    throw new Error(`${model.split("/").pop()}: ${detail || j?.title || j?.error?.message || `HTTP ${r.status}`}`);
   }
   // NIM visual-genai returns { artifacts: [{ base64, finishReason, seed }] } (older: { image })
   const art = Array.isArray(j?.artifacts) ? j.artifacts[0] : null;
-  if (art?.finishReason && /filter/i.test(String(art.finishReason))) {
-    throw new Error("This prompt was blocked by the image safety filter. Please try a different description.");
+  const reason = String(art?.finishReason || j?.finish_reason || "");
+  if (/filter/i.test(reason)) {
+    const e: any = new Error("This prompt was blocked by the image safety filter. Please try a different description.");
+    e.filtered = true;
+    throw e;
   }
   const b64: string = art?.base64 || j?.image || j?.data?.[0]?.b64_json || "";
-  if (!b64) throw new Error("No image was returned. Please try again.");
+  if (!b64) {
+    console.error(`[imagine] ${model} → no image in response: ${txt.slice(0, 300)}`);
+    throw new Error(`${model.split("/").pop()}: no image returned`);
+  }
   const mime = b64.startsWith("iVBOR") ? "image/png" : b64.startsWith("UklGR") ? "image/webp" : "image/jpeg";
   return { b64, mime, seed: Number(art?.seed ?? seed) || seed };
 }
@@ -127,15 +140,27 @@ export async function POST(req: Request) {
     const { prompt, aspect: autoAspect } = await enhance(text);
     const aspect = SIZES[body?.aspect] ? body.aspect : autoAspect;
     const [w, h] = SIZES[aspect];
-    const model = body?.quality === "hd" ? HD : FAST;
+    const chain = [...new Set(body?.quality === "hd" ? [HD, FAST, BACKUP] : [FAST, HD, BACKUP])];
     const seed = Number.isInteger(body?.seed) ? body.seed : Math.floor(Math.random() * 2_147_483_647);
-    const g = await generate(model, prompt, w, h, seed);
+    // try each image model in turn (a model may be disabled for the key, busy, or renamed)
+    let g: Awaited<ReturnType<typeof generate>> | null = null;
+    let model = chain[0];
+    const errors: string[] = [];
+    for (const m of chain) {
+      try { g = await generate(m, prompt, w, h, seed); model = m; break; }
+      catch (e: any) {
+        errors.push(e?.message || String(e));
+        if (e?.filtered) throw e; // safety block → don't retry with another model
+      }
+    }
+    if (!g) throw new Error(errors.length > 1 ? `All image models failed — ${errors.join(" | ")}` : errors[0] || "Image generation failed");
     const row = await db.generatedImage.create({
       data: { userId: dbUser.id, prompt, userText: text, data: g.b64, mime: g.mime, width: w, height: h, seed: g.seed, model },
       select: { id: true },
     });
     return json({ ok: true, id: row.id, url: `/api/imagine/${row.id}`, prompt, width: w, height: h, seed: g.seed, model, used: q.used, limit: st.limit });
   } catch (e: any) {
+    console.error("[imagine] failed:", e?.message || e);
     return json({ ok: false, error: e?.message || "Image generation failed" }, 502);
   }
 }
