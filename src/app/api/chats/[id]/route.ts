@@ -46,6 +46,10 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         if (m.ms) o.ms = Number(m.ms);
         if (m.cut) o.cut = true;
         if (m.file && typeof m.file.name === "string" && typeof m.file.text === "string") o.file = { name: m.file.name.slice(0, 300), text: m.file.text.slice(0, 60000), size: Number(m.file.size) || 0, pages: Number(m.file.pages) || undefined, truncated: !!m.file.truncated || m.file.text.length > 60000 };
+        if (m.imagine) o.imagine = true;
+        if (m.imagineQuality === "hd") o.imagineQuality = "hd";
+        if (m.genImage && typeof m.genImage.id === "string" && /^[a-z0-9]{20,40}$/i.test(m.genImage.id)) o.genImage = { id: m.genImage.id, url: `/api/imagine/${m.genImage.id}`, prompt: String(m.genImage.prompt || "").slice(0, 1500), width: Number(m.genImage.width) || 1024, height: Number(m.genImage.height) || 1024, seed: Number(m.genImage.seed) || 0 };
+        if (typeof m.imgQuery === "string" && m.imgQuery.trim()) o.imgQuery = m.imgQuery.slice(0, 120);
         if (typeof m.thumb === "string" && m.thumb.startsWith("data:image/") && m.thumb.length < 80000) o.thumb = m.thumb;
         return o;
       });

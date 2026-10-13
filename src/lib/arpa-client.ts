@@ -23,6 +23,11 @@ export type ChatMsg = {
   image?: string; // full-size data-URL, only in memory for the turn it was sent
   thumb?: string; // small data-URL, persisted with chat history
   images?: string[]; // extra page images (scanned PDF), memory only
+  imgQuery?: string; // related-images search query chosen by the AI (shows an image gallery)
+  imagine?: boolean; // user msg: this is an image-generation request
+  imagineQuality?: "fast" | "hd";
+  generating?: boolean; // assistant msg: image is being generated
+  genImage?: { id: string; url: string; prompt: string; width: number; height: number; seed?: number }; // AI-generated image
   file?: { name: string; text: string; size?: number; pages?: number; truncated?: boolean }; // attached document text
 };
 export type Chat = {

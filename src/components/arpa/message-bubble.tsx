@@ -2,8 +2,9 @@
 // ARPA V3.7 — chat message bubble with TTS, edit, branch, regen-with-model, reactions, copy-markdown.
 import { fmtSize } from "@/lib/file-extract";
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { toast } from "sonner";
-import { Check, Copy, RefreshCw, Play, AlertTriangle, Volume2, Square, Loader2, Pencil, GitFork, ChevronDown, ThumbsUp, ThumbsDown, FileText, FileDown } from "lucide-react";
+import { Check, Copy, RefreshCw, Play, AlertTriangle, Volume2, Square, Loader2, Pencil, GitFork, ChevronDown, ThumbsUp, ThumbsDown, FileText, FileDown, Wand2, Download, Maximize2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -14,6 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Markdown } from "./markdown";
+import { ImageGallery, hideStreamingMarker } from "./image-gallery";
 import { settingsStore, type ChatMsg, type Model } from "@/lib/arpa-client";
 
 function TypingDots() {
@@ -200,12 +202,36 @@ export function MessageBubble({
         </div>
       </div>
     );
+  } else if (msg.generating && msg.streaming) {
+    // AI image being generated
+    body = (
+      <div className="flex flex-col gap-2">
+        <div className="relative grid aspect-square w-full max-w-sm place-items-center overflow-hidden rounded-2xl border border-border bg-gradient-to-br from-arpa/10 via-muted to-cyan-500/10">
+          <div className="absolute inset-0 animate-pulse bg-gradient-to-r from-transparent via-white/30 to-transparent dark:via-white/5" />
+          <div className="relative flex flex-col items-center gap-2 text-sm text-muted-foreground">
+            <Wand2 className="size-7 animate-bounce text-arpa" />
+            Creating your image…
+          </div>
+        </div>
+      </div>
+    );
   } else if (!msg.content && msg.streaming) {
     body = <TypingDots />;
   } else {
+    // ChatGPT-style: related images appear right after the first paragraph of the answer
+    const shown = msg.streaming ? hideStreamingMarker(msg.content) : msg.content;
+    let head = shown, rest = "";
+    if (msg.imgQuery && !msg.streaming) {
+      const cut = shown.search(/\n\s*\n/);
+      if (cut > 0 && !/^\s*(\||```|#)/.test(shown)) { head = shown.slice(0, cut); rest = shown.slice(cut); }
+      else { head = ""; rest = shown; }
+    }
     body = (
       <div className={msg.streaming ? "streaming-cursor" : ""}>
-        <Markdown>{msg.content}</Markdown>
+        {msg.genImage && <GeneratedImageCard img={msg.genImage} />}
+        {head && <Markdown>{head}</Markdown>}
+        {msg.imgQuery && !msg.streaming && <ImageGallery query={msg.imgQuery} />}
+        {rest && <Markdown>{rest}</Markdown>}
       </div>
     );
   }
@@ -432,6 +458,59 @@ export function MessageBubble({
         </div>
       )}
       </div>
+    </div>
+  );
+}
+
+/* ---------- AI-generated image (NVIDIA FLUX) ---------- */
+function GeneratedImageCard({ img }: { img: NonNullable<ChatMsg["genImage"]> }) {
+  const [loaded, setLoaded] = React.useState(false);
+  const [failed, setFailed] = React.useState(false);
+  const [full, setFull] = React.useState(false);
+  const ratio = `${img.width} / ${img.height}`;
+  const portrait = img.height > img.width;
+  React.useEffect(() => {
+    if (!full) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setFull(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [full]);
+  if (failed) {
+    return <p className="mb-2 text-sm text-muted-foreground">⚠️ This image is no longer available.</p>;
+  }
+  return (
+    <div className={`group/gen relative mb-3 overflow-hidden rounded-2xl border border-border bg-muted ${portrait ? "max-w-[300px]" : "max-w-md"}`} style={{ aspectRatio: ratio }}>
+      {!loaded && <div className="absolute inset-0 animate-pulse bg-muted" />}
+      <img
+        src={img.url}
+        alt={img.prompt}
+        onLoad={() => setLoaded(true)}
+        onError={() => setFailed(true)}
+        onClick={() => setFull(true)}
+        className={`size-full cursor-zoom-in object-cover transition-opacity ${loaded ? "opacity-100" : "opacity-0"}`}
+      />
+      <div className="absolute right-2 top-2 flex gap-1.5 opacity-0 transition-opacity group-hover/gen:opacity-100">
+        <button type="button" onClick={() => setFull(true)} className="grid size-8 place-items-center rounded-full bg-black/60 text-white hover:bg-black/80" title="View full size">
+          <Maximize2 className="size-4" />
+        </button>
+        <a href={`${img.url}?download=1`} download className="grid size-8 place-items-center rounded-full bg-black/60 text-white hover:bg-black/80" title="Download image">
+          <Download className="size-4" />
+        </a>
+      </div>
+      {full && typeof document !== "undefined" && createPortal(
+        <div className="fixed inset-0 z-[120] flex flex-col items-center justify-center gap-3 bg-black/90 p-4" onClick={() => setFull(false)}>
+          <img src={img.url} alt={img.prompt} className="max-h-[85vh] max-w-full rounded-lg object-contain shadow-2xl" onClick={(e) => e.stopPropagation()} />
+          <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
+            <a href={`${img.url}?download=1`} download className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-sm font-medium text-black hover:bg-white/90">
+              <Download className="size-4" /> Download
+            </a>
+            <button type="button" onClick={() => setFull(false)} className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-4 py-2 text-sm text-white hover:bg-white/25">
+              <X className="size-4" /> Close
+            </button>
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }

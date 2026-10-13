@@ -2,7 +2,7 @@
 // ARPA V3.2 — chat composer with voice input, image attach, web search, settings.
 import * as React from "react";
 import { toast } from "sonner";
-import { ArrowUp, Square, Lock, Mic, Settings2, Loader2, X, FileText, Upload } from "lucide-react";
+import { ArrowUp, Square, Lock, Mic, Settings2, Loader2, X, FileText, Upload, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/arpa-client";
 import { ImageAttach, type PickedImage } from "./image-attach";
@@ -25,7 +25,7 @@ export function Composer({
   locked: boolean;
   lockText: string;
   lockSub: string;
-  onSend: (text: string, img?: PickedImage, file?: PickedFile) => void;
+  onSend: (text: string, img?: PickedImage, file?: PickedFile, opts?: { imagine?: boolean; quality?: "fast" | "hd" }) => void;
   onStop: () => void;
   onPlans: () => void;
   onSettings: () => void;
@@ -41,6 +41,9 @@ export function Composer({
   const [file, setFile] = React.useState<PickedFile | null>(null);
   const [reading, setReading] = React.useState(false);
   const [dragging, setDragging] = React.useState(false);
+  // Image mode: the next message is sent to the AI image generator (FLUX)
+  const [imageMode, setImageMode] = React.useState(false);
+  const [imageQuality, setImageQuality] = React.useState<"fast" | "hd">("fast");
   const recogRef = React.useRef<any>(null);
 
   const grow = () => {
@@ -73,6 +76,12 @@ export function Composer({
     const t = value.trim();
     if ((!t && !img && !file) || busy || reading) return;
     const fallback = file ? "Explain this file — summary, key points and anything important." : "Describe this image.";
+    if (imageMode) {
+      if (!t) { toast.message("Describe the image you want to create."); return; }
+      onSend(t, undefined, undefined, { imagine: true, quality: imageQuality });
+      setValue("");
+      return;
+    }
     onSend(t || fallback, img || undefined, file || undefined);
     setFile(null);
     setValue("");
@@ -290,6 +299,29 @@ export function Composer({
           </div>
         </div>
       )}
+      {imageMode && (
+        <div className="mx-auto mb-2 flex max-w-3xl items-center gap-2 text-xs">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-arpa/15 px-2.5 py-1 font-medium text-arpa">
+            <Wand2 className="size-3.5" /> Image mode — describe the image to create
+          </span>
+          <div className="inline-flex overflow-hidden rounded-full border border-border">
+            {(["fast", "hd"] as const).map((q) => (
+              <button
+                key={q}
+                type="button"
+                onClick={() => setImageQuality(q)}
+                className={`px-2.5 py-1 ${imageQuality === q ? "bg-arpa text-arpa-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                title={q === "fast" ? "Fast (FLUX schnell, ~3s)" : "HD — more detail (FLUX dev, slower)"}
+              >
+                {q === "fast" ? "Fast" : "HD"}
+              </button>
+            ))}
+          </div>
+          <button type="button" onClick={() => setImageMode(false)} className="ml-auto text-muted-foreground hover:text-foreground" title="Exit image mode">
+            <X className="size-4" />
+          </button>
+        </div>
+      )}
       {(img || file || reading) && (
         <div className="mx-auto mb-2 flex max-w-3xl flex-wrap items-end gap-3">
           {img && (
@@ -361,11 +393,22 @@ export function Composer({
             }
           }}
           rows={1}
-          placeholder={transcribing ? "Transcribing…" : recording ? "🎤 Recording… keep speaking" : "Ask ARPA anything"}
+          placeholder={transcribing ? "Transcribing…" : recording ? "🎤 Recording… keep speaking" : imageMode ? "e.g. A modern logo for \"RMA Finance\" in blue and gold" : "Ask ARPA anything"}
           className="max-h-60 flex-1 resize-none bg-transparent py-1.5 text-[15px] leading-relaxed outline-none placeholder:text-muted-foreground"
         />
         {/* attach image / file (also drag & drop or paste) */}
         <ImageAttach onFiles={handleFiles} disabled={busy || reading} />
+        {/* AI image generation mode */}
+        <Button
+          onClick={() => setImageMode((v) => !v)}
+          disabled={busy}
+          size="icon"
+          variant="ghost"
+          className={`size-9 shrink-0 rounded-full ${imageMode ? "bg-arpa/15 text-arpa" : "text-muted-foreground hover:text-foreground"}`}
+          title={imageMode ? "Image mode on — click to turn off" : "Create an image (AI)"}
+        >
+          <Wand2 className="size-4" />
+        </Button>
         {/* mic (voice input) */}
         <Button
           onClick={recording ? stopRecording : startRecording}

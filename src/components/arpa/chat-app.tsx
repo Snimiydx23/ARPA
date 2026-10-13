@@ -19,6 +19,7 @@ import {
 } from "@/lib/arpa-client";
 import { Sidebar, deleteChat, renameChat, pinChat } from "./sidebar";
 import { MessageBubble } from "./message-bubble";
+import { extractImageMarker } from "./image-gallery";
 import { Composer } from "./composer";
 import { ModelSelector } from "./model-selector";
 import { PlansModal } from "./plans-modal";
@@ -68,6 +69,17 @@ function RotatingTip() {
     </p>
   );
 }
+
+// user asked to CREATE an image (Hinglish / Hindi / English) → AI image generation
+const IMAGINE_RE = new RegExp(
+  "(?:\\b(?:image|images|photo|picture|pic|tasveer|tasvir|logo|poster|illustration|wallpaper|banner|thumbnail|drawing|painting|sketch|artwork|icon|avatar|cartoon|anime|sticker|chitra)\\b|चित्र|फोटो|तस्वीर|इमेज|लोगो|पोस्टर)" +
+    "[^.?!\\n]{0,60}?(?:\\b(?:banao|banado|bana do|bana de|bnao|bna do|banaiye|generate|create|draw|design|make)\\b|बनाओ|बना दो|बनाइए)" +
+    "|\\b(?:generate|create|draw|design|make|paint|sketch)\\b[^.?!\\n]{0,30}?\\b(?:image|photo|picture|pic|logo|poster|illustration|wallpaper|banner|thumbnail|drawing|painting|sketch|icon|avatar|cartoon|sticker)\\b",
+  "i",
+);
+// …but not questions / advice about images ("logo design ke tips do", "how to make a poster")
+const IMAGINE_NOT_RE = /\b(tips|kaise|kese|how to|how do|how can|kya hai|what is|ideas?|suggest(ion)?s?|explain|samjhao|batao|steps|tutorial|prompt likh|write a prompt)\b|कैसे|क्या है/i;
+const isImagineRequest = (t: string) => IMAGINE_RE.test(t) && !IMAGINE_NOT_RE.test(t);
 
 // user asked for a document → show "Download Word / PDF" buttons under the reply
 const DOC_REQUEST_RE = /\b(word|docx|pdf|document|doc|letter|report|proposal|application|notice|agreement|draft|minutes|resolution|cv|resume|format)\b|(?:दस्तावेज़|पत्र|रिपोर्ट)/i;
@@ -189,6 +201,7 @@ export function ChatApp({ config }: { config: AppConfig }) {
     text: string,
     img?: { image: string; thumb: string; more?: string[]; name?: string },
     file?: { name: string; text: string; size: number; pages?: number; truncated?: boolean },
+    opts?: { imagine?: boolean; quality?: "fast" | "hd" },
   ) => {
     if (busy || !sub || sub.state === "expired") return;
     let chat = c;
@@ -203,7 +216,12 @@ export function ChatApp({ config }: { config: AppConfig }) {
     if (img) { userMsg.image = img.image; userMsg.thumb = img.thumb; if (img.more?.length) userMsg.images = img.more; }
     if (img?.name && !file) userMsg.content = `${text}\n\n(Attached: ${img.name})`;
     if (file) userMsg.file = file;
-    const aiMsg: ChatMsg = { role: "assistant", content: "", streaming: true, model };
+    // image generation: explicit "Image mode" in the composer, or a clear "image banao / generate a logo…" request
+    if (opts?.imagine || (!img && !file && isImagineRequest(text))) {
+      userMsg.imagine = true;
+      if (opts?.quality === "hd") userMsg.imagineQuality = "hd";
+    }
+    const aiMsg: ChatMsg = { role: "assistant", content: "", streaming: true, model, ...(userMsg.imagine ? { generating: true } : {}) };
     const newMsgs = [...chat.msgs, userMsg, aiMsg];
     patchChat(chatId, { msgs: newMsgs, at: Date.now() });
     run(chatId, newMsgs, aiMsg, model);
@@ -236,7 +254,57 @@ export function ChatApp({ config }: { config: AppConfig }) {
     run(c.id, newMsgs, aiMsg, model);
   };
 
+  // ----- AI image generation (NVIDIA FLUX via /api/imagine) -----
+  const runImagine = async (chatId: string, userMsg: ChatMsg, aiMsg: ChatMsg) => {
+    setBusy(true, null);
+    const t0 = Date.now();
+    const state0 = useArpa.getState();
+    const ch0 = state0.chats.find((x) => x.id === chatId);
+    if (ch0) {
+      const u = [...ch0.msgs];
+      u[u.length - 1] = { ...aiMsg, generating: true, streaming: true };
+      state0.patchChat(chatId, { msgs: u });
+    }
+    let finalMsg: ChatMsg;
+    try {
+      const { status, data } = await api<{
+        ok: boolean; id?: string; url?: string; prompt?: string; width?: number; height?: number; seed?: number;
+        used?: number; limit?: number; error?: string; code?: string;
+      }>("/api/imagine", { method: "POST", body: JSON.stringify({ prompt: userMsg.content, quality: userMsg.imagineQuality || "fast" }) });
+      if (status === 200 && data?.ok && data.id) {
+        if (data.used && data.limit) useArpa.setState((s) => ({ usedToday: data.used!, sub: s.sub ? { ...s.sub, limit: data.limit! } : s.sub }));
+        finalMsg = {
+          role: "assistant",
+          content: `Here is your image.\n\n_Prompt used:_ ${data.prompt || userMsg.content}`,
+          model: userMsg.imagineQuality === "hd" ? "ARPA Image HD" : "ARPA Image",
+          ms: Date.now() - t0,
+          genImage: { id: data.id, url: data.url || `/api/imagine/${data.id}`, prompt: data.prompt || userMsg.content, width: data.width || 1024, height: data.height || 1024, seed: data.seed },
+        };
+      } else {
+        if (data?.code === "EXPIRED") setSub({ ...sub!, state: "expired", daysLeft: 0 });
+        finalMsg = { role: "assistant", content: "", error: data?.error || `Image error ${status}`, code: data?.code, model: "ARPA Image" };
+      }
+    } catch (e: any) {
+      finalMsg = { role: "assistant", content: "", error: e?.message || "Image generation failed", model: "ARPA Image" };
+    }
+    const state = useArpa.getState();
+    const ch = state.chats.find((x) => x.id === chatId);
+    if (ch) {
+      const updated = [...ch.msgs];
+      updated[updated.length - 1] = finalMsg;
+      state.patchChat(chatId, { msgs: updated, at: Date.now() });
+      api("/api/chats", {
+        method: "POST",
+        body: JSON.stringify({ id: chatId, title: ch.title, at: Date.now(), msgs: updated.filter((m) => !m.streaming), pinned: !!ch.pinned }),
+      }).catch(() => {});
+    }
+    setBusy(false, null);
+  };
+
   const run = async (chatId: string, msgs: ChatMsg[], aiMsg: ChatMsg, modelId: string) => {
+    // image-generation request → FLUX instead of chat (also used by Regenerate / Edit)
+    const lastUser = msgs[msgs.length - 2];
+    if (lastUser?.role === "user" && lastUser.imagine) return runImagine(chatId, lastUser, aiMsg);
     const ac = new AbortController();
     setBusy(true, ac);
     const t0 = Date.now();
@@ -342,8 +410,12 @@ export function ChatApp({ config }: { config: AppConfig }) {
       }
     }
 
+    // AI may put "[[IMAGES: query]]" on the first line → strip it and keep the query for the image gallery
+    const mk = extractImageMarker(content);
+    if (mk.query) content = mk.content;
     const finalMsg: ChatMsg = {
       ...aiMsg,
+      ...(mk.query ? { imgQuery: mk.query } : {}),
       content: content || aiMsg.content,
       streaming: false,
       model: usedModel,

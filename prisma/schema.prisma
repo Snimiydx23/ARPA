@@ -28,6 +28,7 @@ model User {
   chats    Chat[]
   usages   Usage[]
   payments Payment[]
+  images   GeneratedImage[]
 
   @@index([email])
 }
@@ -87,4 +88,24 @@ model Payment {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+}
+
+// AI-generated images (NVIDIA FLUX) — stored here instead of inside chat JSON to keep chats small.
+// Served at GET /api/imagine/[id] (unguessable cuid).
+model GeneratedImage {
+  id        String   @id @default(cuid())
+  userId    String
+  prompt    String   // final English prompt sent to the model
+  userText  String   @default("") // what the user typed
+  data      String   // base64 image bytes
+  mime      String   @default("image/jpeg")
+  width     Int      @default(1024)
+  height    Int      @default(1024)
+  seed      Int      @default(0)
+  model     String   @default("")
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }
