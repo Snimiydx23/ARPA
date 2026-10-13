@@ -282,7 +282,10 @@ export function ChatApp({ config }: { config: AppConfig }) {
         };
       } else {
         if (data?.code === "EXPIRED") setSub({ ...sub!, state: "expired", daysLeft: 0 });
-        finalMsg = { role: "assistant", content: "", error: data?.error || `Image error ${status}`, code: data?.code, model: "ARPA Image" };
+        const fallback = status === 504 || status === 408
+          ? "Image generation took too long (the free image service is busy). Please press Regenerate to try again."
+          : `Image error ${status}`;
+        finalMsg = { role: "assistant", content: "", error: data?.error || fallback, code: data?.code, model: "ARPA Image" };
       }
     } catch (e: any) {
       finalMsg = { role: "assistant", content: "", error: e?.message || "Image generation failed", model: "ARPA Image" };

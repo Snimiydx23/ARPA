@@ -9,9 +9,13 @@
 //   IMAGE_API_KEY     separate nvapi key for image models (falls back to NVIDIA_API_KEY)
 import { db } from "@/lib/db";
 import { bearerUid, json, status, takeQuota, models } from "@/lib/arpa";
-import { nvComplete, noThinking } from "@/lib/llm";
+import { nvChat, noThinking } from "@/lib/llm";
 
-export const maxDuration = 120;
+export const maxDuration = 300;
+
+const ENHANCE_TIMEOUT_MS = Number(process.env.IMAGE_ENHANCE_TIMEOUT_MS || 12000); // prompt rewrite budget
+const GEN_DEADLINE_MS = 240_000; // total time we wait for FLUX (incl. NVCF polling)
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const FAST = process.env.IMAGE_MODEL_FAST || "black-forest-labs/flux.1-schnell";
 const HD = process.env.IMAGE_MODEL_HD || "black-forest-labs/flux.1-dev";
@@ -28,8 +32,11 @@ async function enhance(text: string): Promise<{ prompt: string; aspect: string }
     : /\b(landscape|wide|banner|thumbnail|youtube|cover|header|16:9|desktop wallpaper)\b/i.test(text)
       ? "landscape"
       : "square";
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ENHANCE_TIMEOUT_MS);
   try {
-    const raw = await nvComplete({
+    const resp = await nvChat({
+      stream: false,
       model: process.env.TITLE_MODEL || models()[0].id,
       temperature: 0.4,
       max_tokens: 300,
@@ -46,12 +53,17 @@ async function enhance(text: string): Promise<{ prompt: string; aspect: string }
         },
         { role: "user", content: text },
       ],
-    });
+    }, ac.signal);
+    const raw = String(((await resp.json()) as any)?.choices?.[0]?.message?.content || "");
     const j = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
     const prompt = String(j.prompt || "").trim();
     const aspect = SIZES[j.aspect] ? j.aspect : guessAspect;
     if (prompt.length > 3) return { prompt: prompt.slice(0, 1500), aspect: guessAspect !== "square" ? guessAspect : aspect };
-  } catch {}
+  } catch {
+    // slow / failed rewrite → just use the user's own words
+  } finally {
+    clearTimeout(timer);
+  }
   return { prompt: text.slice(0, 1500), aspect: guessAspect };
 }
 
@@ -62,11 +74,19 @@ async function generate(model: string, prompt: string, w: number, h: number, see
   const body: Record<string, unknown> = isSchnell
     ? { prompt, width: w, height: h, seed, steps: 4 }
     : { prompt, mode: "base", cfg_scale: 3.5, width: w, height: h, seed, steps: 30 };
-  const r = await fetch(`https://ai.api.nvidia.com/v1/genai/${model}`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}`, Accept: "application/json", "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const started = Date.now();
+  const headers = { Authorization: `Bearer ${key}`, Accept: "application/json", "Content-Type": "application/json", "NVCF-POLL-SECONDS": "30" };
+  let r = await fetch(`https://ai.api.nvidia.com/v1/genai/${model}`, { method: "POST", headers, body: JSON.stringify(body) });
+  // NVIDIA cloud functions answer 202 + NVCF-REQID when the job is queued → poll until it is done
+  while (r.status === 202) {
+    const reqId = r.headers.get("nvcf-reqid");
+    if (!reqId) break;
+    if (Date.now() - started > GEN_DEADLINE_MS) throw new Error("The image service is very busy right now. Please try again in a minute.");
+    await sleep(1500);
+    r = await fetch(`https://api.nvcf.nvidia.com/v2/nvcf/pexec/status/${reqId}`, {
+      headers: { Authorization: `Bearer ${key}`, Accept: "application/json", "NVCF-POLL-SECONDS": "30" },
+    });
+  }
   const txt = await r.text();
   let j: any = {};
   try { j = JSON.parse(txt); } catch {}
