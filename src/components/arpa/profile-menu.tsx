@@ -3,7 +3,7 @@
 // Replaces V2's #profBtn menu and #upgCard.
 import * as React from "react";
 import { useTheme } from "next-themes";
-import { LogOut, Moon, Sun, Sparkles, Trash2, FileText, Mail, ChevronDown, Settings2, Download, BarChart3, Archive } from "lucide-react";
+import { LogOut, Moon, Sun, Sparkles, Trash2, FileText, Mail, ChevronDown, Settings2, Download, BarChart3, Archive, Brain, ShieldCheck } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,6 +27,7 @@ export function ProfileMenu({
   onLegal,
   onSettings,
   onStats,
+  onMemory,
   onArchived,
   onExportCurrent,
   onClearChats,
@@ -38,6 +39,7 @@ export function ProfileMenu({
   onLegal: () => void;
   onSettings: () => void;
   onStats: () => void;
+  onMemory?: () => void;
   onArchived: () => void;
   onExportCurrent: () => void;
   onClearChats: () => void;
@@ -77,6 +79,16 @@ export function ProfileMenu({
         <DropdownMenuItem onSelect={onStats}>
           <BarChart3 className="mr-2 size-4" /> My usage
         </DropdownMenuItem>
+        {onMemory && (
+          <DropdownMenuItem onSelect={onMemory}>
+            <Brain className="mr-2 size-4" /> Memory
+          </DropdownMenuItem>
+        )}
+        {user.isAdmin && (
+          <DropdownMenuItem onSelect={() => { window.location.href = "/admin"; }}>
+            <ShieldCheck className="mr-2 size-4 text-arpa" /> Admin dashboard
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem onSelect={onArchived}>
           <Archive className="mr-2 size-4" /> Archived chats
         </DropdownMenuItem>

@@ -29,6 +29,15 @@ model User {
   usages   Usage[]
   payments Payment[]
   images   GeneratedImage[]
+  usageEvents UsageEvent[]
+  projects     Project[]
+  projectFiles ProjectFile[]
+  memories     Memory[]
+  canvases     CanvasDoc[]
+  memoryEnabled Boolean @default(true) // user can turn long-term memory off
+  role          String  @default("user") // user | admin  (ADMIN_EMAILS env also grants admin)
+  blocked       Boolean @default(false)  // blocked by an admin → cannot log in or use the API
+  blockedReason String  @default("")
 
   @@index([email])
 }
@@ -55,10 +64,17 @@ model Chat {
   shareToken String? @unique // V3.3: public read-only share token (null = private)
   archived  Boolean  @default(false) // V3.5: archived chats hidden from default sidebar
   systemPrompt String @default("") // V3.5: custom persona/instructions for this chat
+  projectId String? // Projects: chat belongs to a project (null = no project)
+  storage    String @default("json") // "json" = messages in `msgs` (old) · "table" = rows in Message
+  msgCount   Int    @default(0)      // number of messages (kept in sync on every save)
+  searchText String @default("")     // lower-cased start of the conversation, for the sidebar filter
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project  Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  messages Message[]
 
   @@index([userId, at])
+  @@index([projectId, at])
 }
 
 // Daily message counter (V2: users/{uid}/usage/{day})
@@ -108,4 +124,160 @@ model GeneratedImage {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
+}
+
+// One row per AI call — tokens, cost, latency, model, routing decision (AI Gateway observability)
+model UsageEvent {
+  id           String   @id @default(cuid())
+  userId       String
+  kind         String   // chat | title | image | vision | enhance | tool | canvas
+  model        String   @default("")
+  provider     String   @default("")
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  estimated    Boolean  @default(true) // true when the provider did not report usage
+  costUsd      Float    @default(0)
+  latencyMs    Int      @default(0)
+  ok           Boolean  @default(true)
+  error        String?
+  routeReason  String?
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@index([model, createdAt])
+}
+
+// Projects / workspaces: shared instructions + knowledge files for a group of chats
+model Project {
+  id           String   @id @default(cuid())
+  userId       String
+  name         String
+  description  String   @default("")
+  instructions String   @default("") // e.g. "You are the finance analyst for this project."
+  emoji        String   @default("📁")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  files ProjectFile[]
+  chats Chat[]
+
+  @@index([userId, updatedAt])
+}
+
+// Knowledge files of a project (text extracted in the browser; injected into chats of the project)
+model ProjectFile {
+  id        String   @id @default(cuid())
+  projectId String
+  userId    String
+  name      String
+  size      Int      @default(0)
+  chars     Int      @default(0)
+  text      String
+  createdAt DateTime @default(now())
+
+  project Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chunks  ProjectChunk[]
+
+  @@index([projectId])
+}
+
+// Searchable pieces of a knowledge file (RAG). Built on upload, or lazily for older files.
+model ProjectChunk {
+  id        String  @id @default(cuid())
+  projectId String
+  fileId    String
+  userId    String
+  idx       Int                // order inside the file
+  label     String  @default("") // "page 12" | "Sheet: P&L" | "Slide 3"
+  text      String
+  embedding Bytes?             // Float32 vector (null until embedded / when embeddings are off)
+
+  file ProjectFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([fileId, idx])
+}
+
+// Long-term user memory — only saved with the user's confirmation; viewable/editable/deletable
+model Memory {
+  id        String   @id @default(cuid())
+  userId    String
+  content   String
+  source    String   @default("user") // user | ai (suggested by AI, confirmed by user)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+// Every admin action (extend plan, block, unblock, role change) — who, what, when
+model AdminAudit {
+  id        String   @id @default(cuid())
+  adminId   String   // User.id of the admin
+  adminEmail String  @default("")
+  action    String   // extend | block | unblock | set_limit | role
+  targetId  String   // User.id affected
+  targetEmail String @default("")
+  details   String   @default("") // JSON
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([targetId, createdAt])
+}
+
+// Canvas: a document or code file opened from a chat answer and edited side-by-side (by the user or by ARPA)
+model CanvasDoc {
+  id        String   @id @default(cuid())
+  userId    String
+  chatId    String?  // chat it was opened from (optional)
+  title     String   @default("Untitled")
+  kind      String   @default("doc") // doc | code
+  language  String   @default("")    // code language (python, js, …)
+  content   String   @default("")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  versions CanvasVersion[]
+
+  @@index([userId, updatedAt])
+}
+
+// Snapshots of a canvas (AI edits, restores, "save version") — newest kept, oldest trimmed
+model CanvasVersion {
+  id        String   @id @default(cuid())
+  canvasId  String
+  label     String   @default("") // "AI: Shorter", "Restored", "Saved"…
+  content   String
+  createdAt DateTime @default(now())
+
+  canvas CanvasDoc @relation(fields: [canvasId], references: [id], onDelete: Cascade)
+
+  @@index([canvasId, createdAt])
+}
+
+// One chat message (normalised storage). Only changed messages are rewritten on save (hash compare).
+model Message {
+  id        String   @id @default(cuid())
+  chatId    String
+  userId    String
+  idx       Int      // position in the conversation (0-based)
+  role      String   // user | assistant
+  content   String
+  data      String   @default("{}") // every other saved field (model, file, sources, codeResult…) as JSON
+  hash      String   @default("")   // sha1 of the whole message — unchanged → not rewritten
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, idx])
+  @@index([userId])
 }

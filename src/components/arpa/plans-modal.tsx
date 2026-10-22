@@ -1,7 +1,7 @@
 "use client";
-// ARPA V3 — Plans / pricing modal.
-// Replaces V2's openPlans(). Simulated payment flow since sandbox has no
-// Razorpay keys — clicking "pay" directly calls /api/pay-verify.
+// ARPA — Plans / pricing modal.
+// live mode: server creates a Razorpay order → Razorpay Checkout → server verifies the signature.
+// simulated mode (ALLOW_SIMULATED_PAYMENTS=true, demo only): skips checkout.
 import * as React from "react";
 import { toast } from "sonner";
 import { Check, Loader2, Sparkles, ShieldCheck } from "lucide-react";
@@ -15,6 +15,46 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api, fmtDate, rupee, type Plan, type SubStatus } from "@/lib/arpa-client";
+
+declare global { interface Window { Razorpay?: any } }
+
+let rzpLoader: Promise<void> | null = null;
+function loadRazorpay(): Promise<void> {
+  if (typeof window !== "undefined" && window.Razorpay) return Promise.resolve();
+  if (!rzpLoader) {
+    rzpLoader = new Promise((res, rej) => {
+      const s = document.createElement("script");
+      s.src = "https://checkout.razorpay.com/v1/checkout.js";
+      s.onload = () => res();
+      s.onerror = () => { rzpLoader = null; rej(new Error("Could not load the payment window. Check your connection.")); };
+      document.head.appendChild(s);
+    });
+  }
+  return rzpLoader;
+}
+
+type OrderResp = { ok: boolean; orderId: string; amount: number; currency?: string; key?: string; simulated?: boolean; plan: Plan; user?: { name: string; email: string }; error?: string };
+type PayResult = { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string };
+
+/** Open Razorpay Checkout and resolve with the payment ids + signature (or reject if closed). */
+function openCheckout(o: OrderResp): Promise<PayResult> {
+  return new Promise((resolve, reject) => {
+    const rzp = new window.Razorpay({
+      key: o.key,
+      order_id: o.orderId,
+      amount: o.amount,
+      currency: o.currency || "INR",
+      name: "ARPA",
+      description: `${o.plan.label} plan`,
+      prefill: { name: o.user?.name, email: o.user?.email },
+      theme: { color: "#6d28d9" },
+      handler: (r: PayResult) => resolve(r),
+      modal: { ondismiss: () => reject(new Error("Payment cancelled")) },
+    });
+    rzp.on("payment.failed", (r: any) => reject(new Error(r?.error?.description || "Payment failed")));
+    rzp.open();
+  });
+}
 
 export function PlansModal({
   open,
@@ -42,7 +82,7 @@ export function PlansModal({
   const buy = async (plan: Plan) => {
     setBusyId(plan.id);
     try {
-      const order = await api<{ ok: boolean; orderId: string; amount: number; plan: Plan; error?: string }>(
+      const order = await api<OrderResp>(
         "/api/pay-order",
         { method: "POST", body: JSON.stringify({ plan: plan.id }) }
       );
@@ -50,19 +90,17 @@ export function PlansModal({
         toast.error(order.data?.error || "Order could not be created");
         return;
       }
-      // simulated payment_id + signature
-      const pid = "pay_sim_" + Date.now();
+      let pay: PayResult;
+      if (order.data.simulated) {
+        pay = { razorpay_order_id: order.data.orderId, razorpay_payment_id: "pay_sim_" + Date.now(), razorpay_signature: "sim" };
+      } else {
+        await loadRazorpay();
+        try { pay = await openCheckout(order.data); }
+        catch (e: any) { if (e?.message !== "Payment cancelled") toast.error(e?.message || "Payment failed"); return; }
+      }
       const verify = await api<{ ok: boolean; sub: SubStatus; error?: string }>(
         "/api/pay-verify",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            razorpay_order_id: order.data.orderId,
-            razorpay_payment_id: pid,
-            razorpay_signature: "sim",
-            plan: plan.id,
-          }),
-        }
+        { method: "POST", body: JSON.stringify({ ...pay, plan: plan.id }) }
       );
       if (verify.status !== 200 || !verify.data?.ok) {
         toast.error(verify.data?.error || "Payment verification failed");
@@ -132,7 +170,7 @@ export function PlansModal({
 
         <p className="mt-3 flex items-center justify-center gap-1.5 text-center text-xs text-muted-foreground">
           <ShieldCheck className="size-3.5" />
-          Secure payment (simulated demo). UPI, Card, NetBanking available in production.
+          Secure payment via Razorpay — UPI, Card, NetBanking.
         </p>
       </DialogContent>
     </Dialog>

@@ -28,11 +28,13 @@ export async function GET(req: Request) {
   const totalChats = await db.chat.count({ where: { userId: u.id } });
   const pinnedChats = await db.chat.count({ where: { userId: u.id, pinned: true } });
   // count messages + reactions across all chats (stored as JSON)
-  const allChats = await db.chat.findMany({ where: { userId: u.id }, select: { msgs: true } });
+  // messages + reactions: table-stored chats are counted in the database, old JSON chats are parsed
+  const allChats: any[] = await db.chat.findMany({ where: { userId: u.id }, select: { storage: true, msgCount: true, msgs: true } });
   let msgCount = 0;
   let upCount = 0;
   let downCount = 0;
   for (const c of allChats) {
+    if (c.storage === "table") { msgCount += c.msgCount || 0; continue; }
     try {
       const arr = JSON.parse(c.msgs || "[]");
       if (Array.isArray(arr)) {
@@ -44,6 +46,12 @@ export async function GET(req: Request) {
       }
     } catch {}
   }
+  const [upT, downT] = await Promise.all([
+    db.message.count({ where: { userId: u.id, data: { contains: '"reaction":"up"' } } }),
+    db.message.count({ where: { userId: u.id, data: { contains: '"reaction":"down"' } } }),
+  ]);
+  upCount += upT || 0;
+  downCount += downT || 0;
   const weekTotal = days.reduce((a, b) => a + b.count, 0);
 
   return json({

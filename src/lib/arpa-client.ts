@@ -1,6 +1,7 @@
+import { withSourceList } from "./citations";
 // ARPA V3 — client API helper + types
 export type Plan = { id: string; label: string; price: number; days: number };
-export type Model = { id: string; label: string };
+export type Model = { id: string; label: string; kind?: "policy" | "model"; provider?: string; vision?: boolean; reasoning?: boolean };
 export type SubStatus = {
   state: "paid" | "trial" | "expired";
   until: number;
@@ -8,7 +9,19 @@ export type SubStatus = {
   plan: string;
   limit: number;
 };
-export type ArpaUser = { name: string; email: string; picture: string };
+export type WebSource = { n: number; title: string; url: string; domain: string; snippet: string; published?: string };
+export type CodeResult = {
+  code: string; ok: boolean; stdout: string; error?: string; ms: number;
+  tables: { title: string; columns: string[]; index: string[]; rows: unknown[][]; total: number }[];
+  images?: string[];            // PNG base64 — this session only (not saved)
+  imageCount?: number;          // saved: how many charts were made
+  files?: { name: string; url: string; size: number }[]; // blob URLs — this session only
+  fileNames?: string[];         // saved
+  missingFiles?: string[];
+};
+export type AgentStep = { tool: string; label: string; ok?: boolean; ms?: number };
+export type FileSource = { n: number; fileId: string; name: string; label: string; excerpt: string };
+export type ArpaUser = { name: string; email: string; picture: string; isAdmin?: boolean };
 export type ChatMsg = {
   role: "user" | "assistant";
   content: string;
@@ -27,8 +40,19 @@ export type ChatMsg = {
   imagine?: boolean; // user msg: this is an image-generation request
   imagineQuality?: "fast" | "hd";
   generating?: boolean; // assistant msg: image is being generated
+  memorySuggestion?: string; // assistant msg: AI proposed a memory (user confirms before saving)
+  memorySaved?: boolean;
+  status?: string; // assistant msg while streaming: "Searching the web…" (not persisted)
+  sources?: WebSource[]; // web sources cited as [n] in the answer
+  research?: "quick" | "deep";
+  fileSources?: FileSource[];
+  agentSteps?: AgentStep[];
+  canvasId?: string; // this answer was opened in a canvas
+  codeResult?: CodeResult; // assistant msg: output of its python block
+  codeRunning?: boolean;   // assistant msg: python is running (memory only)
+  codeOutput?: boolean;    // user msg: automatic "[Code output]" sent back to ARPA // Agent mode: tools used for this answer // project-file excerpts cited as [F1] in the answer
   genImage?: { id: string; url: string; prompt: string; width: number; height: number; seed?: number }; // AI-generated image
-  file?: { name: string; text: string; size?: number; pages?: number; truncated?: boolean }; // attached document text
+  file?: { name: string; text: string; size?: number; pages?: number; truncated?: boolean; raw?: string[] }; // attached document text
 };
 export type Chat = {
   id: string;
@@ -40,7 +64,19 @@ export type Chat = {
   shared?: boolean;
   archived?: boolean;
   systemPrompt?: string;
+  projectId?: string | null;
+  msgsLoaded?: boolean;  // false = list item only; messages are fetched when the chat is opened
+  msgCount?: number;
+  searchText?: string;   // lower-cased start of the conversation (sidebar filter without loading messages)
 };
+
+export type Project = {
+  id: string; name: string; description: string; instructions: string; emoji: string;
+  updatedAt: number; chatCount: number; fileCount: number;
+};
+export type ProjectFileMeta = { id: string; name: string; size: number; chars: number; createdAt: number };
+export type ProjectDetail = Omit<Project, "chatCount" | "fileCount"> & { files: ProjectFileMeta[] };
+export type MemoryItem = { id: string; content: string; source: "user" | "ai"; createdAt: number };
 
 export type AppConfig = {
   app: string;
@@ -51,7 +87,7 @@ export type AppConfig = {
   plans: Plan[];
   models: Model[];
   support: string;
-  paymentMode: "live" | "simulated";
+  paymentMode: "live" | "simulated" | "disabled";
   googleClientId?: string;
   emailLogin?: boolean;
 };
@@ -110,7 +146,7 @@ export async function api<T = any>(
 
 // SSE streaming fetch — returns the reader + headers
 export async function streamChat(
-  body: { messages: { role: string; content: string; image?: string; images?: string[]; file?: { name: string; text: string } }[]; model: string; temperature?: number; systemPrompt?: string },
+  body: { messages: { role: string; content: string; image?: string; images?: string[]; file?: { name: string; text: string } }[]; model: string; projectId?: string | null; temperature?: number; systemPrompt?: string; codeInterpreter?: { files: string[] } },
   signal: AbortSignal
 ): Promise<{ response: Response }> {
   const token = tokenStore.get();
@@ -165,7 +201,7 @@ export function chatToMarkdown(title: string, msgs: ChatMsg[]) {
     } else if (m.error) {
       lines.push(`> ⚠️ ${m.error}`, "");
     } else if (m.content) {
-      lines.push(`**ARPA${m.model ? ` (${m.model})` : ""}:**`, "", m.content, "");
+      lines.push(`**ARPA${m.model ? ` (${m.model})` : ""}:**`, "", withSourceList(m.content, m.sources, m.fileSources), "");
     }
   }
   return lines.join("\n");

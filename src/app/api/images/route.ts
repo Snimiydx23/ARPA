@@ -3,7 +3,8 @@
 //   1. Tavily web image search   — when TAVILY_API_KEY is set (best: real web screenshots/photos)
 //   2. Wikipedia page images + Wikimedia Commons — free, no key needed
 // → { ok, images: [{ src, thumb, title, source, link }] }
-import { bearerUid, json } from "@/lib/arpa";
+import { enforceRate } from "@/lib/rate-limit";
+import { bearerUid, json, isBlockedUid, blockedResponse } from "@/lib/arpa";
 
 type Img = { src: string; thumb: string; title: string; source: string; link: string };
 
@@ -75,6 +76,8 @@ async function wiki(q: string): Promise<Img[]> {
 export async function GET(req: Request) {
   const uid = bearerUid(req);
   if (!uid) return json({ error: "Please log in" }, 401);
+  { const limited = await enforceRate("tool", uid); if (limited) return limited; }
+  if (await isBlockedUid(uid)) return blockedResponse();
   const q = (new URL(req.url).searchParams.get("q") || "").trim().slice(0, 120);
   if (q.length < 2) return json({ ok: true, images: [] });
 

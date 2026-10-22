@@ -2,7 +2,7 @@
 // ARPA V3.3 — sidebar with chat history, pin support, tags, share.
 import * as React from "react";
 import { toast } from "sonner";
-import { Search, Plus, MoreHorizontal, Pencil, Trash2, X, MessageSquare, Pin, PinOff, Download, Share2, Tag as TagIcon, Filter, Bot, Archive, Copy, Globe, FileJson } from "lucide-react";
+import { Search, Plus, MoreHorizontal, Pencil, Trash2, X, MessageSquare, Pin, PinOff, Download, Share2, Tag as TagIcon, Filter, Bot, Archive, Copy, Globe, FileJson, FolderInput, FolderMinus, ChevronLeft, Settings2, FolderPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -12,8 +12,11 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
 } from "@/components/ui/dropdown-menu";
-import { api, type Chat } from "@/lib/arpa-client";
+import { api, type Chat, type Project } from "@/lib/arpa-client";
 
 function grpName(t: number) {
   const now = new Date();
@@ -43,6 +46,12 @@ export function Sidebar({
   onGlobalSearch,
   streamingChatId,
   onClose,
+  projects = [],
+  curProjectId = null,
+  onPickProject,
+  onNewProject,
+  onEditProject,
+  onMoveChat,
 }: {
   chats: Chat[];
   curId: string | null;
@@ -60,7 +69,21 @@ export function Sidebar({
   onGlobalSearch: () => void;
   streamingChatId?: string | null;
   onClose?: () => void;
+  projects?: Project[];
+  curProjectId?: string | null;
+  onPickProject?: (id: string | null) => void;
+  onNewProject?: () => void;
+  onEditProject?: (id: string) => void;
+  onMoveChat?: (chatId: string, projectId: string | null) => void;
 }) {
+  const curProject = projects.find((p) => p.id === curProjectId) || null;
+  const projectById = React.useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
+  // live chat counts from the loaded chat list (server counts can be stale right after creating a chat)
+  const chatCounts = React.useMemo(() => {
+    const m = new Map<string, number>();
+    for (const c of chats) if (c.projectId) m.set(c.projectId, (m.get(c.projectId) || 0) + 1);
+    return m;
+  }, [chats]);
   const [q, setQ] = React.useState("");
   const [tagFilter, setTagFilter] = React.useState<string | null>(null);
 
@@ -73,17 +96,18 @@ export function Sidebar({
 
   const filtered = React.useMemo(() => {
     const k = q.trim().toLowerCase();
-    let list = chats;
+    let list = curProjectId ? chats.filter((c) => c.projectId === curProjectId) : chats;
     if (tagFilter) list = list.filter((c) => (c.tags || []).includes(tagFilter));
     if (k) {
       list = list.filter(
         (c) =>
           c.title.toLowerCase().includes(k) ||
-          c.msgs.some((m) => (m.content || "").toLowerCase().includes(k))
+          c.msgs.some((m) => (m.content || "").toLowerCase().includes(k)) ||
+          (c.searchText || "").includes(k)
       );
     }
     return list;
-  }, [chats, q, tagFilter]);
+  }, [chats, q, tagFilter, curProjectId]);
 
   // pinned first (Pinned section), then grouped by date for the rest
   const pinned = React.useMemo(() => filtered.filter((c) => c.pinned), [filtered]);
@@ -141,6 +165,59 @@ export function Sidebar({
         </Button>
       </div>
 
+      {/* projects */}
+      {onPickProject && (
+        <div className="px-2.5 pb-1 pt-1.5">
+          {curProject ? (
+            <div className="rounded-lg border border-arpa/30 bg-arpa/5 px-2 py-1.5">
+              <div className="flex items-center gap-1">
+                <Button size="icon" variant="ghost" className="size-6" onClick={() => onPickProject(null)} aria-label="Back to all chats">
+                  <ChevronLeft className="size-4" />
+                </Button>
+                <span className="text-base leading-none">{curProject.emoji}</span>
+                <span className="flex-1 truncate text-sm font-semibold" title={curProject.name}>{curProject.name}</span>
+                <Button size="icon" variant="ghost" className="size-6 text-muted-foreground" onClick={() => onEditProject?.(curProject.id)} aria-label="Project settings">
+                  <Settings2 className="size-3.5" />
+                </Button>
+              </div>
+              <p className="px-1 pt-0.5 text-[11px] text-muted-foreground">
+                {chatCounts.get(curProject.id) || 0} chat{(chatCounts.get(curProject.id) || 0) !== 1 ? "s" : ""} · {curProject.fileCount} file{curProject.fileCount !== 1 ? "s" : ""}
+                {curProject.instructions ? " · instructions set" : ""}
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between px-1 py-0.5">
+                <p className="text-xs font-semibold text-muted-foreground">Projects</p>
+                <Button size="icon" variant="ghost" className="size-6 text-muted-foreground" onClick={onNewProject} aria-label="New project" title="New project">
+                  <FolderPlus className="size-3.5" />
+                </Button>
+              </div>
+              {projects.length === 0 ? (
+                <button onClick={onNewProject} className="w-full rounded-lg px-2.5 py-1.5 text-left text-xs text-muted-foreground hover:bg-sidebar-accent">
+                  + Create a project to group chats with shared instructions & files
+                </button>
+              ) : (
+                <div className="max-h-40 overflow-y-auto">
+                  {projects.map((p) => (
+                    <div key={p.id} className="group flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm hover:bg-sidebar-accent">
+                      <button onClick={() => onPickProject(p.id)} className="flex min-w-0 flex-1 items-center gap-2 text-left" title={p.name}>
+                        <span className="text-sm leading-none">{p.emoji}</span>
+                        <span className="truncate">{p.name}</span>
+                        <span className="ml-auto text-[10px] text-muted-foreground">{chatCounts.get(p.id) || 0}</span>
+                      </button>
+                      <Button size="icon" variant="ghost" className="size-6 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100" onClick={() => onEditProject?.(p.id)} aria-label={`${p.name} settings`}>
+                        <Settings2 className="size-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       {/* tag filter chips */}
       {allTags.length > 0 && (
         <div className="flex flex-wrap gap-1 px-2.5 pb-1.5">
@@ -168,7 +245,7 @@ export function Sidebar({
       <div className="scrollbar-thin flex-1 overflow-y-auto px-2.5 pb-2 pt-1">
         {filtered.length === 0 ? (
           <p className="px-2 py-4 text-center text-sm text-muted-foreground">
-            {q ? "No results found" : "No chats yet. Ask a new question to get started."}
+            {q ? "No results found" : curProject ? "No chats in this project yet. Start a new chat — it will use the project's instructions and files." : "No chats yet. Ask a new question to get started."}
           </p>
         ) : (
           <>
@@ -191,6 +268,12 @@ export function Sidebar({
                     onExportJson={onExportJson}
                     onShare={onShare}
                     onTags={onTags}
+                    onChatSettings={onChatSettings}
+                    onDuplicate={onDuplicate}
+                    projects={projects}
+                    project={c.projectId ? projectById.get(c.projectId) : undefined}
+                    showProject={!curProjectId}
+                    onMoveChat={onMoveChat}
                     isStreaming={c.id === streamingChatId}
                   />
                 ))}
@@ -213,6 +296,12 @@ export function Sidebar({
                     onExportJson={onExportJson}
                     onShare={onShare}
                     onTags={onTags}
+                    onChatSettings={onChatSettings}
+                    onDuplicate={onDuplicate}
+                    projects={projects}
+                    project={c.projectId ? projectById.get(c.projectId) : undefined}
+                    showProject={!curProjectId}
+                    onMoveChat={onMoveChat}
                     isStreaming={c.id === streamingChatId}
                   />
                 ))}
@@ -224,7 +313,7 @@ export function Sidebar({
 
       {/* footer hint */}
       <div className="border-t border-sidebar-border px-3 py-2 text-[11px] text-muted-foreground">
-        {chats.length} chat{chats.length !== 1 ? "s" : ""} · synced
+        {curProject ? `${filtered.length} in project` : `${chats.length} chat${chats.length !== 1 ? "s" : ""}`} · synced
         {pinned.length > 0 && ` · ${pinned.length} pinned`}
       </div>
     </div>
@@ -245,6 +334,10 @@ function ChatRow({
   onChatSettings,
   onDuplicate,
   isStreaming,
+  projects = [],
+  project,
+  showProject,
+  onMoveChat,
 }: {
   c: Chat;
   curId: string | null;
@@ -259,6 +352,10 @@ function ChatRow({
   onChatSettings: (chat: Chat) => void;
   onDuplicate: (chat: Chat) => void;
   isStreaming?: boolean;
+  projects?: Project[];
+  project?: Project;
+  showProject?: boolean;
+  onMoveChat?: (chatId: string, projectId: string | null) => void;
 }) {
   const tags = (c.tags || []).slice(0, 2);
   const extraTags = (c.tags || []).length - tags.length;
@@ -281,6 +378,7 @@ function ChatRow({
           </span>
         ) : c.pinned ? <Pin className="size-3 shrink-0 text-arpa" /> : <MessageSquare className="size-3.5 shrink-0 text-muted-foreground" />}
         <span className="truncate">{c.title}</span>
+        {showProject && project && <span className="shrink-0 text-[11px] leading-none" title={`Project: ${project.name}`}>{project.emoji}</span>}
         {c.systemPrompt && <Bot className="size-3 shrink-0 text-arpa" />}
         {c.shared && <Share2 className="size-3 shrink-0 text-cyan-500" />}
       </button>
@@ -314,6 +412,28 @@ function ChatRow({
           <DropdownMenuItem onSelect={() => onChatSettings(c)}>
             <Bot className="mr-2 size-3.5" /> Persona & settings{c.systemPrompt ? " ✓" : ""}
           </DropdownMenuItem>
+          {onMoveChat && (projects.length > 0 || c.projectId) && (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <FolderInput className="mr-2 size-3.5" /> Move to project
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="max-h-72 overflow-y-auto">
+                {projects.filter((p) => p.id !== c.projectId).map((p) => (
+                  <DropdownMenuItem key={p.id} onSelect={() => onMoveChat(c.id, p.id)}>
+                    <span className="mr-2">{p.emoji}</span> <span className="truncate">{p.name}</span>
+                  </DropdownMenuItem>
+                ))}
+                {c.projectId && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={() => onMoveChat(c.id, null)}>
+                      <FolderMinus className="mr-2 size-3.5" /> Remove from project
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          )}
           <DropdownMenuItem onSelect={() => onShare(c)}>
             <Share2 className="mr-2 size-3.5" /> {c.shared ? "Manage share link" : "Share chat"}
           </DropdownMenuItem>

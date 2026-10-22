@@ -1,17 +1,21 @@
-// /api/chats/[id] — GET (full chat), PATCH (rename), DELETE
+// /api/chats/[id] — GET (full chat incl. messages), PATCH (rename, pin, messages…), DELETE
+import { enforceRate } from "@/lib/rate-limit";
 import { db } from "@/lib/db";
 import { bearerUid, json } from "@/lib/arpa";
+import { ownsProject } from "@/services/projects";
+import crypto from "node:crypto";
+import { sanitizeMsgs, loadMessages, saveChatWithMessages } from "@/services/chat-store";
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const uid = bearerUid(req);
   if (!uid) return json({ error: "Please log in" }, 401);
+  { const limited = await enforceRate("write", uid); if (limited) return limited; }
   const u = await db.user.findUnique({ where: { uid }, select: { id: true } });
   if (!u) return json({ error: "User not found" }, 404);
   const { id } = await params;
   const r = await db.chat.findUnique({ where: { id } });
   if (!r || r.userId !== u.id) return json({ error: "Chat not found" }, 404);
-  let msgs: any[] = [];
-  try { msgs = JSON.parse(r.msgs || "[]"); } catch {}
+  const msgs = await loadMessages(r);
   return json({
     ok: true, chat: {
       id: r.id, title: r.title, at: r.at.getTime(), msgs, pinned: !!r.pinned,
@@ -26,6 +30,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const uid = bearerUid(req);
   if (!uid) return json({ error: "Please log in" }, 401);
+  { const limited = await enforceRate("write", uid); if (limited) return limited; }
   const u = await db.user.findUnique({ where: { uid }, select: { id: true } });
   if (!u) return json({ error: "User not found" }, 404);
   const { id } = await params;
@@ -36,28 +41,15 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const data: any = {};
   if (typeof body.title === "string") data.title = String(body.title).slice(0, 200);
   if (body.at) data.at = new Date(body.at);
-  if (Array.isArray(body.msgs)) {
-    const msgs = body.msgs
-      .filter((m: any) => m && (m.role === "user" || m.role === "assistant"))
-      .map((m: any) => {
-        const o: any = { role: m.role, content: String(m.content || "").slice(0, 40000) };
-        if (m.edited) o.edited = true;
-        if (m.model) o.model = String(m.model);
-        if (m.ms) o.ms = Number(m.ms);
-        if (m.cut) o.cut = true;
-        if (m.file && typeof m.file.name === "string" && typeof m.file.text === "string") o.file = { name: m.file.name.slice(0, 300), text: m.file.text.slice(0, 60000), size: Number(m.file.size) || 0, pages: Number(m.file.pages) || undefined, truncated: !!m.file.truncated || m.file.text.length > 60000 };
-        if (m.imagine) o.imagine = true;
-        if (m.imagineQuality === "hd") o.imagineQuality = "hd";
-        if (m.genImage && typeof m.genImage.id === "string" && /^[a-z0-9]{20,40}$/i.test(m.genImage.id)) o.genImage = { id: m.genImage.id, url: `/api/imagine/${m.genImage.id}`, prompt: String(m.genImage.prompt || "").slice(0, 1500), width: Number(m.genImage.width) || 1024, height: Number(m.genImage.height) || 1024, seed: Number(m.genImage.seed) || 0 };
-        if (typeof m.imgQuery === "string" && m.imgQuery.trim()) o.imgQuery = m.imgQuery.slice(0, 120);
-        if (typeof m.thumb === "string" && m.thumb.startsWith("data:image/") && m.thumb.length < 80000) o.thumb = m.thumb;
-        return o;
-      });
-    data.msgs = JSON.stringify(msgs);
-  }
+  const msgs = Array.isArray(body.msgs) ? sanitizeMsgs(body.msgs) : undefined;
   if (typeof body.pinned === "boolean") data.pinned = body.pinned;
   if (typeof body.archived === "boolean") data.archived = body.archived;
   if (typeof body.systemPrompt === "string") data.systemPrompt = String(body.systemPrompt).slice(0, 2000);
+  if (body.projectId === null) data.projectId = null;
+  else if (typeof body.projectId === "string" && body.projectId) {
+    if (!(await ownsProject(u.id, body.projectId))) return json({ error: "Project not found" }, 404);
+    data.projectId = body.projectId;
+  }
   if (typeof body.tags === "string") {
     // sanitize: comma-separated, each tag trimmed, lowercase, alnum+dash only, max 5 tags
     const tags = body.tags.split(",").map((t: string) => t.trim().toLowerCase().replace(/[^a-z0-9\- ]/g, "")).filter(Boolean).slice(0, 5);
@@ -67,17 +59,20 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     // generate a share token if not already present
     const existing = await db.chat.findUnique({ where: { id }, select: { shareToken: true } });
     if (!existing?.shareToken) {
-      data.shareToken = "sh_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+      data.shareToken = "sh_" + crypto.randomBytes(16).toString("base64url"); // unguessable
     }
   } else if (body.share === false) {
     data.shareToken = null;
   }
-  const updated = await db.chat.update({ where: { id }, data });
+  const updated: any = await saveChatWithMessages(id, u.id, msgs && (msgs.length || body.clear === true) ? msgs : undefined, (chatData) =>
+    db.chat.update({ where: { id }, data: { ...data, ...chatData } }),
+  );
   return json({
     ok: true, id: updated.id, title: updated.title, at: updated.at.getTime(),
     pinned: !!updated.pinned,
     archived: !!updated.archived,
     systemPrompt: updated.systemPrompt || "",
+    projectId: updated.projectId || null,
     tags: updated.tags ? updated.tags.split(",").map((t: string) => t.trim()).filter(Boolean) : [],
     shareToken: updated.shareToken,
   });
@@ -86,6 +81,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const uid = bearerUid(req);
   if (!uid) return json({ error: "Please log in" }, 401);
+  { const limited = await enforceRate("write", uid); if (limited) return limited; }
   const u = await db.user.findUnique({ where: { uid }, select: { id: true } });
   if (!u) return json({ error: "User not found" }, 404);
   const { id } = await params;

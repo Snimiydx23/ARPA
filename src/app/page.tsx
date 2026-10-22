@@ -44,13 +44,14 @@ function HomeInner() {
       // 2. if a token is present, try /api/me
       const token = tokenStore.get();
       if (token) {
-        const r2 = await api<{ ok: boolean; user: ArpaUser; sub: SubStatus; usedToday: number; error?: string }>("/api/me");
+        const r2 = await api<{ ok: boolean; user: ArpaUser; sub: SubStatus; usedToday: number; isAdmin?: boolean; error?: string; code?: string }>("/api/me");
         if (cancelled) return;
         if (r2.status === 200 && r2.data?.ok) {
-          setSession({ user: r2.data.user, sub: r2.data.sub, usedToday: r2.data.usedToday });
+          setSession({ user: { ...r2.data.user, ...(r2.data.isAdmin ? { isAdmin: true } : {}) }, sub: r2.data.sub, usedToday: r2.data.usedToday });
           return;
         }
         tokenStore.clear();
+        if (r2.data?.code === "BLOCKED") { setAuthError(r2.data.error || "Your account has been suspended."); return; }
       }
       useArpa.setState({ booting: false });
     })();

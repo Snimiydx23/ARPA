@@ -2,13 +2,16 @@
 // Body: { audio: "<base64 webm/mp3/wav>" } → { ok, text }
 // Provider: Groq Whisper (free tier, OpenAI-compatible) — set GROQ_API_KEY in env.
 // Optional: ASR_BASE_URL (default https://api.groq.com/openai/v1), ASR_MODEL (default whisper-large-v3-turbo).
-import { bearerUid, json } from "@/lib/arpa";
+import { enforceRate } from "@/lib/rate-limit";
+import { bearerUid, json, isBlockedUid, blockedResponse } from "@/lib/arpa";
 
 export const maxDuration = 60;
 
 export async function POST(req: Request) {
   const uid = bearerUid(req);
   if (!uid) return json({ error: "Please log in" }, 401);
+  { const limited = await enforceRate("tool", uid); if (limited) return limited; }
+  if (await isBlockedUid(uid)) return blockedResponse();
   let body: any;
   try { body = await req.json(); } catch { return json({ error: "Bad request" }, 400); }
   const audio = String(body?.audio || "").trim();

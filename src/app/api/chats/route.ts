@@ -1,29 +1,42 @@
 // GET  /api/chats — list current user's chats (V3: replaces V2 firestore list)
 // POST /api/chats — create OR save (upsert) a chat
+// Messages are stored per row in the Message table (services/chat-store.ts); old JSON chats are read transparently.
+import { enforceRate } from "@/lib/rate-limit";
+import crypto from "node:crypto";
 import { db } from "@/lib/db";
 import { bearerUid, json } from "@/lib/arpa";
+import { ownsProject } from "@/services/projects";
+import { sanitizeMsgs, loadMany, saveChatWithMessages } from "@/services/chat-store";
 
 export async function GET(req: Request) {
   const uid = bearerUid(req);
   if (!uid) return json({ error: "Please log in" }, 401);
+  { const limited = await enforceRate("write", uid); if (limited) return limited; }
   const u = await db.user.findUnique({ where: { uid }, select: { id: true } });
   if (!u) return json({ error: "User not found" }, 404);
+  // ?lite=1 → list without messages (the app loads a chat's messages when it is opened)
+  const lite = new URL(req.url).searchParams.get("lite") === "1";
 
-  const rows = await db.chat.findMany({
+  const rows: any[] = await db.chat.findMany({
     where: { userId: u.id, archived: false },
     orderBy: [{ pinned: "desc" }, { at: "desc" }],
     take: 150,
-    select: { id: true, title: true, at: true, msgs: true, pinned: true, tags: true, shareToken: true, systemPrompt: true },
+    select: { id: true, title: true, at: true, pinned: true, tags: true, shareToken: true, systemPrompt: true, projectId: true, storage: true, msgCount: true, searchText: true, ...(lite ? {} : { msgs: true }) },
   });
-  const chats = rows.map(r => {
-    let msgs: any[] = [];
-    try { msgs = JSON.parse(r.msgs || "[]"); } catch {}
-    return {
-      id: r.id, title: r.title, at: r.at.getTime(), msgs, pinned: !!r.pinned,
+  const all = lite ? null : await loadMany(rows);
+  const chats = rows.map((r) => {
+    const base = {
+      id: r.id, title: r.title, at: r.at.getTime(), pinned: !!r.pinned,
       tags: r.tags ? r.tags.split(",").map((t: string) => t.trim()).filter(Boolean) : [],
       shared: !!r.shareToken,
       systemPrompt: r.systemPrompt || "",
+      projectId: r.projectId || null,
     };
+    if (lite) {
+      // old JSON chats that were never re-saved have msgCount 0 → the app treats "unknown" as "load on open"
+      return { ...base, msgs: [], msgsLoaded: false, msgCount: r.msgCount || 0, searchText: r.searchText || "" };
+    }
+    return { ...base, msgs: all!.get(r.id) || [] };
   });
   return json({ ok: true, chats });
 }
@@ -31,53 +44,41 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const uid = bearerUid(req);
   if (!uid) return json({ error: "Please log in" }, 401);
+  { const limited = await enforceRate("write", uid); if (limited) return limited; }
   const u = await db.user.findUnique({ where: { uid }, select: { id: true } });
   if (!u) return json({ error: "User not found" }, 404);
 
   let body: any = {};
   try { body = await req.json(); } catch {}
-  const id = String(body.id || "").trim();
+  const id = String(body.id || "").trim().slice(0, 40);
   const title = String(body.title || "New chat").slice(0, 200);
   const at = body.at ? new Date(body.at) : new Date();
-  const msgs = Array.isArray(body.msgs)
-    ? body.msgs
-        .filter((m: any) => m && (m.role === "user" || m.role === "assistant") && typeof (m.content || "") === "string")
-        .map((m: any) => {
-          const o: any = { role: m.role, content: (m.content || "").slice(0, 40000) };
-          if (m.error) o.error = String(m.error).slice(0, 500);
-          if (m.model) o.model = String(m.model);
-          if (m.cut) o.cut = true;
-          if (m.ms) o.ms = Number(m.ms);
-          if (m.edited) o.edited = true;
-          if (m.reaction === "up" || m.reaction === "down") o.reaction = m.reaction;
-          if (m.file && typeof m.file.name === "string" && typeof m.file.text === "string") o.file = { name: m.file.name.slice(0, 300), text: m.file.text.slice(0, 60000), size: Number(m.file.size) || 0, pages: Number(m.file.pages) || undefined, truncated: !!m.file.truncated || m.file.text.length > 60000 };
-          if (m.imagine) o.imagine = true;
-          if (m.imagineQuality === "hd") o.imagineQuality = "hd";
-          if (m.genImage && typeof m.genImage.id === "string" && /^[a-z0-9]{20,40}$/i.test(m.genImage.id)) o.genImage = { id: m.genImage.id, url: `/api/imagine/${m.genImage.id}`, prompt: String(m.genImage.prompt || "").slice(0, 1500), width: Number(m.genImage.width) || 1024, height: Number(m.genImage.height) || 1024, seed: Number(m.genImage.seed) || 0 };
-          if (typeof m.imgQuery === "string" && m.imgQuery.trim()) o.imgQuery = m.imgQuery.slice(0, 120);
-          if (typeof m.thumb === "string" && m.thumb.startsWith("data:image/") && m.thumb.length < 80000) o.thumb = m.thumb;
-          return o;
-        })
-    : [];
+  let msgs = Array.isArray(body.msgs) ? sanitizeMsgs(body.msgs) : undefined;
 
-  // Trim to keep under ~900KB (SQLite TEXT limit is fine but keep sane)
-  let msgsJson = JSON.stringify(msgs);
-  while (msgsJson.length > 900000 && msgs.length > 2) {
-    msgs.splice(0, 2);
-    msgsJson = JSON.stringify(msgs);
+  // optional project assignment (must be the user's own project)
+  let projectId: string | null | undefined = undefined;
+  if (body.projectId === null) projectId = null;
+  else if (typeof body.projectId === "string" && body.projectId) {
+    if (!(await ownsProject(u.id, body.projectId))) return json({ error: "Project not found" }, 404);
+    projectId = body.projectId;
   }
 
-  if (id) {
-    // upsert save
-    const existing = await db.chat.findUnique({ where: { id }, select: { userId: true } });
-    if (existing && existing.userId !== u.id) return json({ error: "Not yours" }, 403);
-    const saved = await db.chat.upsert({
-      where: { id },
-      update: { title, msgs: msgsJson, at },
-      create: { id, userId: u.id, title, msgs: msgsJson, at },
-    });
-    return json({ ok: true, id: saved.id, at: saved.at.getTime(), pinned: !!saved.pinned });
+  const newId = id || crypto.randomUUID().replace(/-/g, "").slice(0, 24);
+  const existing: any = id ? await db.chat.findUnique({ where: { id }, select: { userId: true, msgCount: true, storage: true, msgs: true } }) : null;
+  if (existing && existing.userId !== u.id) return json({ error: "Not yours" }, 403);
+  // safety net: an empty list never wipes a conversation that has messages (e.g. a chat whose
+  // messages weren't loaded yet). Deleting messages goes through DELETE or explicit clear:true.
+  if (existing && msgs && msgs.length === 0 && body.clear !== true) {
+    const had = existing.storage === "table" ? existing.msgCount > 0 : (existing.msgs || "[]") !== "[]";
+    if (had) msgs = undefined;
   }
-  const created = await db.chat.create({ data: { userId: u.id, title, msgs: msgsJson, at } });
-  return json({ ok: true, id: created.id, at: created.at.getTime() });
+
+  const saved: any = await saveChatWithMessages(newId, u.id, existing ? msgs : msgs ?? [], (chatData) =>
+    db.chat.upsert({
+      where: { id: newId },
+      update: { title, at, ...(projectId !== undefined ? { projectId } : {}), ...chatData },
+      create: { id: newId, userId: u.id, title, at, projectId: projectId ?? null, ...(typeof body.systemPrompt === "string" ? { systemPrompt: body.systemPrompt.slice(0, 2000) } : {}), ...chatData },
+    }),
+  );
+  return json({ ok: true, id: saved.id, at: saved.at.getTime(), pinned: !!saved.pinned, projectId: saved.projectId || null });
 }

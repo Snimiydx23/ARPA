@@ -14,12 +14,17 @@ import { Sheet, SheetContent, SheetTitle, SheetDescription } from "@/components/
 import { Badge } from "@/components/ui/badge";
 import { useArpa, selectCurChat } from "@/lib/store";
 import {
+  type Project,
   api, streamChat, uid, modelStore, tokenStore, settingsStore, chatToMarkdown, chatToJson, downloadFile, printChat, fmtDate,
-  type Chat, type ChatMsg, type SubStatus, type AppConfig,
+  type Chat, type ChatMsg, type WebSource, type FileSource, type AgentStep, type SubStatus, type AppConfig,
 } from "@/lib/arpa-client";
 import { Sidebar, deleteChat, renameChat, pinChat } from "./sidebar";
 import { MessageBubble } from "./message-bubble";
 import { extractImageMarker } from "./image-gallery";
+import { withSourceList } from "@/lib/citations";
+import { extractMemoryMarker } from "@/lib/memory-marker";
+import { ProjectDialog } from "./project-dialog";
+import { MemoryDialog } from "./memory-dialog";
 import { Composer } from "./composer";
 import { ModelSelector } from "./model-selector";
 import { PlansModal } from "./plans-modal";
@@ -39,6 +44,10 @@ import { ArchivedDialog } from "./archived-dialog";
 import { TemplatesDialog } from "./templates-dialog";
 import { DateSeparator } from "./date-separator";
 import { GlobalSearchDialog } from "./global-search-dialog";
+import { CanvasPanel } from "./canvas-panel";
+import { CanvasContext, type OpenCanvas } from "@/lib/canvas-context";
+import { runPython, resetPython, extractPython, formatOutputForModel } from "@/lib/python-runner";
+import { getRawFile } from "@/lib/raw-files";
 
 function greeting() {
   const h = new Date().getHours();
@@ -89,7 +98,12 @@ export function ChatApp({ config }: { config: AppConfig }) {
     user, sub, usedToday, chats, curId, model, busy, ctrl,
     setSub, setChats, setCurId, setModel, setBusy,
     upsertChat, patchChat, removeChat, curChat,
+    projects, curProjectId, setProjects, setCurProjectId,
   } = useArpa();
+  const [projectDlg, setProjectDlg] = React.useState<{ open: boolean; id: string | null }>({ open: false, id: null });
+  const [memoryOpen, setMemoryOpen] = React.useState(false);
+  const [canvasId, setCanvasId] = React.useState<string | null>(null);
+  const [codeStatus, setCodeStatus] = React.useState<string | undefined>();
 
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const [plansOpen, setPlansOpen] = React.useState(false);
@@ -125,12 +139,22 @@ export function ChatApp({ config }: { config: AppConfig }) {
     }
   }, [config.models, model, setModel]);
 
+  // projects (sidebar section + chat counts)
+  const loadProjects = React.useCallback(async () => {
+    const { status, data } = await api<{ ok: boolean; projects: Project[] }>("/api/projects");
+    if (status === 200 && data?.ok) setProjects(data.projects);
+  }, [setProjects]);
+  React.useEffect(() => { loadProjects(); }, [loadProjects]);
+
   // load chats on mount
   React.useEffect(() => {
     (async () => {
-      const { status, data } = await api<{ ok: boolean; chats: Chat[] }>("/api/chats");
+      // list only (fast); each chat's messages are fetched when it is opened
+      const { status, data } = await api<{ ok: boolean; chats: Chat[] }>("/api/chats?lite=1");
       if (status === 200 && data?.ok) {
-        setChats(data.chats);
+        // keep messages already in memory (e.g. a chat started before the list arrived)
+        const local = new Map(useArpa.getState().chats.filter((x) => x.msgsLoaded !== false && x.msgs.length).map((x) => [x.id, x]));
+        setChats(data.chats.map((x) => (local.has(x.id) ? { ...x, msgs: local.get(x.id)!.msgs, msgsLoaded: true } : x)));
       }
     })();
   }, [setChats]);
@@ -174,7 +198,8 @@ export function ChatApp({ config }: { config: AppConfig }) {
   }, [curChat()?.msgs, nearBottom, scrollToBottom]);
 
   const c = curChat();
-  const fresh = !c || c.msgs.length === 0;
+  const loadingMsgs = !!c && c.msgsLoaded === false;
+  const fresh = !c || (c.msgs.length === 0 && !loadingMsgs);
 
   // V3.4: in-chat search — compute which message indices match the query
   const searchMatches = React.useMemo(() => {
@@ -196,6 +221,28 @@ export function ChatApp({ config }: { config: AppConfig }) {
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, []);
 
+  // ----- lazy message loading -----
+  const loadingRef = React.useRef(new Map<string, Promise<Chat | null>>());
+  const ensureLoaded = React.useCallback(async (id: string): Promise<Chat | null> => {
+    const ch = useArpa.getState().chats.find((x) => x.id === id);
+    if (!ch) return null;
+    if (ch.msgsLoaded !== false) return ch;
+    const pending = loadingRef.current.get(id);
+    if (pending) return pending;
+    const p = (async () => {
+      const { status, data } = await api<{ ok: boolean; chat?: Chat; error?: string }>(`/api/chats/${id}`);
+      loadingRef.current.delete(id);
+      if (status !== 200 || !data?.chat) { toast.error(data?.error || "Could not load this chat"); return null; }
+      useArpa.getState().patchChat(id, { msgs: data.chat.msgs || [], msgsLoaded: true });
+      return useArpa.getState().chats.find((x) => x.id === id) || null;
+    })();
+    loadingRef.current.set(id, p);
+    return p;
+  }, []);
+  React.useEffect(() => {
+    if (curId) ensureLoaded(curId).then(() => requestAnimationFrame(scrollToBottom));
+  }, [curId, ensureLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ----- send / stream -----
   const send = (
     text: string,
@@ -204,10 +251,11 @@ export function ChatApp({ config }: { config: AppConfig }) {
     opts?: { imagine?: boolean; quality?: "fast" | "hd" },
   ) => {
     if (busy || !sub || sub.state === "expired") return;
+    if (c && c.msgsLoaded === false) { toast.message("Loading this chat… try again in a moment"); ensureLoaded(c.id); return; }
     let chat = c;
     const isNewChat = !chat;
     if (!chat) {
-      chat = { id: uid(), title: text.replace(/\s+/g, " ").slice(0, 50), msgs: [], at: Date.now() };
+      chat = { id: uid(), title: text.replace(/\s+/g, " ").slice(0, 50), msgs: [], at: Date.now(), projectId: curProjectId };
       upsertChat(chat);
       setCurId(chat.id);
     }
@@ -232,9 +280,11 @@ export function ChatApp({ config }: { config: AppConfig }) {
       }).then(({ status, data }) => {
         if (status === 200 && data?.ok && data.title) {
           patchChat(chatId, { title: data.title });
+          // save with the LATEST messages — the answer may already be finished (don't overwrite it with the old list)
+          const cur = useArpa.getState().chats.find((x) => x.id === chatId);
           api("/api/chats", {
             method: "POST",
-            body: JSON.stringify({ id: chatId, title: data.title, at: Date.now(), msgs: newMsgs.filter((m) => !m.streaming) }),
+            body: JSON.stringify({ id: chatId, title: data.title, at: Date.now(), msgs: (cur?.msgs || newMsgs).filter((m) => !m.streaming), pinned: !!cur?.pinned, projectId: cur?.projectId ?? undefined }),
           }).catch(() => {});
         }
       }).catch(() => {});
@@ -298,7 +348,7 @@ export function ChatApp({ config }: { config: AppConfig }) {
       state.patchChat(chatId, { msgs: updated, at: Date.now() });
       api("/api/chats", {
         method: "POST",
-        body: JSON.stringify({ id: chatId, title: ch.title, at: Date.now(), msgs: updated.filter((m) => !m.streaming), pinned: !!ch.pinned }),
+        body: JSON.stringify({ id: chatId, title: ch.title, at: Date.now(), msgs: updated.filter((m) => !m.streaming), pinned: !!ch.pinned, projectId: ch.projectId ?? undefined }),
       }).catch(() => {});
     }
     setBusy(false, null);
@@ -330,15 +380,28 @@ export function ChatApp({ config }: { config: AppConfig }) {
     const chatBeforeRun = useArpa.getState().chats.find((x) => x.id === chatId);
     const customSystemPrompt = chatBeforeRun?.systemPrompt;
 
+    // Python code interpreter: on when the chat has data files (CSV / Excel / JSON…) or the user wrote "/python"
+    const ciFiles = [...new Set(msgs.flatMap((m) => (m.role === "user" ? m.file?.raw || [] : [])))];
+    const ci = ciFiles.length > 0 || msgs.some((m) => m.role === "user" && /^\s*\/python\b/i.test(m.content));
+
     let content = "";
     let errored: string | null = null;
     let code: string | undefined;
     let cut = false;
     let usedModel = modelId;
+    let status: string | undefined;
+    let sources: WebSource[] | undefined;
+    let fileSources: FileSource[] | undefined;
+    let agentSteps: AgentStep[] | undefined;
+    const research = (response: Response) => {
+      const r = response.headers.get("x-arpa-route") || "";
+      return r.startsWith("research-") ? (r.slice(9) as "quick" | "deep") : undefined;
+    };
+    let researchKind: "quick" | "deep" | undefined;
 
     try {
       const { response } = await streamChat(
-        { messages: hist, model: modelId, temperature: settings.temperature, systemPrompt: customSystemPrompt },
+        { messages: hist, model: modelId, temperature: settings.temperature, systemPrompt: customSystemPrompt, projectId: chatBeforeRun?.projectId || undefined, ...(ci ? { codeInterpreter: { files: ciFiles } } : {}) },
         ac.signal
       );
       if (response.status === 401) throw new Error("Session expired — please log in again.");
@@ -352,6 +415,7 @@ export function ChatApp({ config }: { config: AppConfig }) {
         throw err;
       }
       usedModel = response.headers.get("x-arpa-model") || modelId;
+      researchKind = research(response);
       const usedHdr = Number(response.headers.get("x-arpa-used"));
       const limitHdr = Number(response.headers.get("x-arpa-limit"));
       if (usedHdr && limitHdr) {
@@ -374,7 +438,7 @@ export function ChatApp({ config }: { config: AppConfig }) {
           const m = ch.msgs[idx];
           if (!m || !m.streaming) return;
           const updated = [...ch.msgs];
-          updated[idx] = { ...m, content, model: usedModel };
+          updated[idx] = { ...m, content, model: usedModel, status: content ? undefined : status, sources, fileSources, agentSteps, research: researchKind };
           state.patchChat(chatId, { msgs: updated });
           if (nearBottom) scrollToBottom();
         });
@@ -393,7 +457,17 @@ export function ChatApp({ config }: { config: AppConfig }) {
           if (!d || d === "[DONE]") return;
           let j: any;
           try { j = JSON.parse(d); } catch { continue; }
-          if (j.error) { errored = j.error.message || "Stream error"; continue; }
+          if (j.error) { errored = j.error.message || "Stream error"; code = j.error.code; continue; }
+          if (j.arpa) {
+            // research progress / sources / final model label (web research path)
+            if ("status" in j.arpa) status = j.arpa.status || undefined;
+            if (Array.isArray(j.arpa.sources)) sources = j.arpa.sources;
+            if (Array.isArray(j.arpa.fileSources)) fileSources = j.arpa.fileSources;
+            if (Array.isArray(j.arpa.steps)) agentSteps = j.arpa.steps;
+            if (j.arpa.model) usedModel = j.arpa.model;
+            paint();
+            continue;
+          }
           const ch = j.choices?.[0];
           if (ch?.delta?.content) { content += ch.delta.content; paint(); }
           if (ch?.finish_reason === "length") cut = true;
@@ -416,9 +490,18 @@ export function ChatApp({ config }: { config: AppConfig }) {
     // AI may put "[[IMAGES: query]]" on the first line → strip it and keep the query for the image gallery
     const mk = extractImageMarker(content);
     if (mk.query) content = mk.content;
+    // AI may end with "[[MEMORY: fact]]" → strip it; the user confirms before anything is saved
+    const mem = extractMemoryMarker(content);
+    if (mem.memory) content = mem.content;
     const finalMsg: ChatMsg = {
       ...aiMsg,
       ...(mk.query ? { imgQuery: mk.query } : {}),
+      ...(mem.memory ? { memorySuggestion: mem.memory } : {}),
+      ...(sources?.length ? { sources } : {}),
+      ...(fileSources?.length ? { fileSources } : {}),
+      ...(agentSteps?.length ? { agentSteps } : {}),
+      ...(researchKind ? { research: researchKind } : {}),
+      status: undefined,
       content: content || aiMsg.content,
       streaming: false,
       model: usedModel,
@@ -434,10 +517,84 @@ export function ChatApp({ config }: { config: AppConfig }) {
       state.patchChat(chatId, { msgs: updated, at: Date.now() });
       api("/api/chats", {
         method: "POST",
-        body: JSON.stringify({ id: chatId, title: ch.title, at: Date.now(), msgs: updated.filter((m) => !m.streaming), pinned: !!ch.pinned }),
+        body: JSON.stringify({ id: chatId, title: ch.title, at: Date.now(), msgs: updated.filter((m) => !m.streaming), pinned: !!ch.pinned, projectId: ch.projectId ?? undefined }),
       }).catch(() => {});
     }
     setBusy(false, null);
+    // the answer contains a python block → run it in the browser and send the output back (max 3 rounds)
+    if (ci && !errored && !cut && finalMsg.content) maybeAutoRun(chatId);
+  };
+
+  // ---- Python code interpreter (runs in the browser) ----
+  const saveChatNow = (chatId: string) => {
+    const ch = useArpa.getState().chats.find((x) => x.id === chatId);
+    if (!ch) return;
+    api("/api/chats", {
+      method: "POST",
+      body: JSON.stringify({ id: chatId, title: ch.title, at: Date.now(), msgs: ch.msgs.filter((m) => !m.streaming), pinned: !!ch.pinned, projectId: ch.projectId ?? undefined }),
+    }).catch(() => {});
+  };
+  const patchMsg = (chatId: string, idx: number, patch: Partial<ChatMsg>) => {
+    const ch = useArpa.getState().chats.find((x) => x.id === chatId);
+    if (!ch || !ch.msgs[idx]) return;
+    const updated = [...ch.msgs];
+    updated[idx] = { ...updated[idx], ...patch };
+    useArpa.getState().patchChat(chatId, { msgs: updated });
+  };
+  const sendCodeOutput = (chatId: string, idx: number) => {
+    const ch = useArpa.getState().chats.find((x) => x.id === chatId);
+    const m = ch?.msgs[idx];
+    if (!ch || !m?.codeResult) return;
+    const r = m.codeResult;
+    const out: ChatMsg = {
+      role: "user", codeOutput: true,
+      content: formatOutputForModel({ ok: r.ok, stdout: r.stdout, stderr: "", error: r.error, images: r.images || Array(r.imageCount || 0).fill(""), tables: r.tables, files: (r.files || []).map((f) => ({ name: f.name, bytes: new Uint8Array(), mime: "" })), ms: r.ms, missingFiles: r.missingFiles }, r.code),
+    };
+    const aiMsg: ChatMsg = { role: "assistant", content: "", streaming: true, model };
+    const msgs = [...ch.msgs.slice(0, idx + 1), out, aiMsg];
+    useArpa.getState().patchChat(chatId, { msgs, at: Date.now() });
+    run(chatId, msgs, aiMsg, model);
+  };
+  const executeCode = async (chatId: string, idx: number, code: string, opts: { send: boolean }) => {
+    const ch = useArpa.getState().chats.find((x) => x.id === chatId);
+    if (!ch) return;
+    const ac = new AbortController();
+    setBusy(true, ac);
+    setCodeStatus("Starting Python…");
+    patchMsg(chatId, idx, { codeRunning: true });
+    const names = [...new Set(ch.msgs.flatMap((m) => (m.role === "user" ? m.file?.raw || [] : [])))];
+    const files = names.flatMap((n) => { const b = getRawFile(n); return b ? [{ name: n, bytes: b }] : []; });
+    const missing = names.filter((n) => !getRawFile(n) && code.includes(n));
+    let r;
+    try {
+      r = await runPython(code, files, { onStatus: setCodeStatus, signal: ac.signal });
+    } finally {
+      setCodeStatus(undefined);
+    }
+    const result = {
+      code, ok: r.ok, stdout: r.stdout, error: r.error, ms: r.ms, tables: r.tables,
+      images: r.images, imageCount: r.images.length,
+      files: r.files.map((f) => ({ name: f.name, size: f.bytes.byteLength, url: URL.createObjectURL(new Blob([f.bytes as BlobPart], { type: f.mime })) })),
+      fileNames: r.files.map((f) => f.name),
+      ...(missing.length ? { missingFiles: missing } : {}),
+    };
+    patchMsg(chatId, idx, { codeRunning: false, codeResult: result });
+    saveChatNow(chatId);
+    setBusy(false, null);
+    if (opts.send && !ac.signal.aborted) sendCodeOutput(chatId, idx);
+  };
+  const maybeAutoRun = (chatId: string) => {
+    const ch = useArpa.getState().chats.find((x) => x.id === chatId);
+    if (!ch) return;
+    const idx = ch.msgs.length - 1;
+    const m = ch.msgs[idx];
+    if (m?.role !== "assistant" || m.error) return;
+    const code = extractPython(m.content);
+    if (!code) return;
+    let rounds = 0;
+    for (let k = idx - 1; k >= 0; k--) { const x = ch.msgs[k]; if (x.role === "user") { if (x.codeOutput) rounds++; else break; } }
+    if (rounds >= 3) return;
+    executeCode(chatId, idx, code, { send: true });
   };
 
   const stop = () => { ctrl?.abort(); };
@@ -478,8 +635,8 @@ export function ChatApp({ config }: { config: AppConfig }) {
     });
   };
 
-  const exportChat = (id: string) => {
-    const chat = chats.find((x) => x.id === id);
+  const exportChat = async (id: string) => {
+    const chat = await ensureLoaded(id);
     if (!chat) { toast.error("Chat not found"); return; }
     const md = chatToMarkdown(chat.title, chat.msgs);
     const safe = chat.title.replace(/[^a-z0-9\-]+/gi, "-").slice(0, 40).toLowerCase() || "chat";
@@ -488,8 +645,8 @@ export function ChatApp({ config }: { config: AppConfig }) {
   };
 
   // V3.10: JSON export (backup format with metadata)
-  const exportChatJson = (id: string) => {
-    const chat = chats.find((x) => x.id === id);
+  const exportChatJson = async (id: string) => {
+    const chat = await ensureLoaded(id);
     if (!chat) { toast.error("Chat not found"); return; }
     const json = chatToJson(chat.title, chat.msgs);
     const safe = chat.title.replace(/[^a-z0-9\-]+/gi, "-").slice(0, 40).toLowerCase() || "chat";
@@ -503,7 +660,7 @@ export function ChatApp({ config }: { config: AppConfig }) {
     const t = toast.loading(format === "docx" ? "Creating Word file…" : "Creating PDF…");
     try {
       const { downloadChat } = await import("@/lib/doc-export");
-      await downloadChat(format, c.title, c.msgs.filter((m) => !m.streaming).map((m) => ({ role: m.role, content: m.content, error: m.error })));
+      await downloadChat(format, c.title, c.msgs.filter((m) => !m.streaming).map((m) => ({ role: m.role, content: withSourceList(m.content, m.sources, m.fileSources), error: m.error })));
       toast.success(format === "docx" ? "Word file downloaded ✓" : "PDF downloaded ✓", { id: t });
     } catch (e: any) {
       toast.error(e?.message || "Could not create the file", { id: t });
@@ -537,18 +694,21 @@ export function ChatApp({ config }: { config: AppConfig }) {
       msgs: upto,
       at: Date.now(),
       pinned: false,
+      projectId: c.projectId,
     };
     upsertChat(newChat);
     setCurId(newId);
     api("/api/chats", {
       method: "POST",
-      body: JSON.stringify({ id: newId, title: newChat.title, at: Date.now(), msgs: upto }),
+      body: JSON.stringify({ id: newId, title: newChat.title, at: Date.now(), msgs: upto, projectId: c.projectId ?? undefined }),
     }).catch(() => {});
     toast.success("Branch created — new chat");
   };
 
   // V3.7: duplicate an entire chat (full copy of msgs + persona)
-  const onDuplicate = (chat: Chat) => {
+  const onDuplicate = async (listChat: Chat) => {
+    const chat = await ensureLoaded(listChat.id);
+    if (!chat) return;
     const cleanMsgs = chat.msgs.filter((m) => !m.streaming && (m.content || m.error));
     const newId = uid();
     const newChat: Chat = {
@@ -559,12 +719,13 @@ export function ChatApp({ config }: { config: AppConfig }) {
       pinned: false,
       systemPrompt: chat.systemPrompt,
       tags: chat.tags,
+      projectId: chat.projectId,
     };
     upsertChat(newChat);
     setCurId(newId);
     api("/api/chats", {
       method: "POST",
-      body: JSON.stringify({ id: newId, title: newChat.title, at: Date.now(), msgs: cleanMsgs, systemPrompt: chat.systemPrompt || "" }),
+      body: JSON.stringify({ id: newId, title: newChat.title, at: Date.now(), msgs: cleanMsgs, systemPrompt: chat.systemPrompt || "", projectId: chat.projectId ?? undefined }),
     }).catch(() => {});
     toast.success("Chat duplicated");
   };
@@ -632,6 +793,78 @@ export function ChatApp({ config }: { config: AppConfig }) {
   const openTags = (chat: Chat) => { setTargetChat(chat); setTagsOpen(true); };
   const openChatSettings = (chat: Chat) => { setTargetChat(chat); setChatSettingsOpen(true); };
 
+  // ----- projects -----
+  const moveChat = async (chatId: string, projectId: string | null) => {
+    const { status, data } = await api<{ ok: boolean; error?: string }>(`/api/chats/${chatId}`, { method: "PATCH", body: JSON.stringify({ projectId }) });
+    if (status !== 200 || !data?.ok) { toast.error(data?.error || "Could not move chat"); return; }
+    patchChat(chatId, { projectId });
+    loadProjects();
+    toast.success(projectId ? `Moved to ${projects.find((p) => p.id === projectId)?.name || "project"}` : "Removed from project");
+  };
+  const pickProject = (id: string | null) => {
+    if (busy) stop();
+    setCurProjectId(id);
+    setCurId(null);
+  };
+
+  // ----- memory suggestion chip -----
+  const onMemoryAction = async (i: number, action: "save" | "dismiss") => {
+    if (!c) return;
+    const m = c.msgs[i];
+    if (!m?.memorySuggestion) return;
+    if (action === "save") {
+      const { status, data } = await api<{ ok: boolean; duplicate?: boolean; error?: string }>("/api/memory", {
+        method: "POST", body: JSON.stringify({ content: m.memorySuggestion, source: "ai" }),
+      });
+      if (status !== 200 || !data?.ok) { toast.error(data?.error || "Could not save memory"); return; }
+      toast.success(data.duplicate ? "Already in memory" : "Saved to memory");
+    }
+    const updated = [...c.msgs];
+    updated[i] = action === "save" ? { ...m, memorySaved: true } : { ...m, memorySuggestion: undefined };
+    patchChat(c.id, { msgs: updated });
+    api("/api/chats", { method: "POST", body: JSON.stringify({ id: c.id, title: c.title, at: c.at, msgs: updated.filter((x) => !x.streaming), projectId: c.projectId ?? undefined }) }).catch(() => {});
+  };
+
+  // ---- Canvas: open an answer (or a code block) in the side panel ----
+  const createCanvas = async (o: { content: string; kind: "doc" | "code"; language?: string; title?: string }) => {
+    const { status, data } = await api<{ ok: boolean; canvas?: { id: string }; error?: string }>("/api/canvas", {
+      method: "POST",
+      body: JSON.stringify({ content: o.content.slice(0, 200_000), kind: o.kind, language: o.language || undefined, title: o.title, chatId: c?.id }),
+    });
+    if (status !== 200 || !data?.canvas) { toast.error(data?.error || "Could not open canvas"); return null; }
+    return data.canvas.id;
+  };
+  const openCodeCanvas: OpenCanvas = async (o) => {
+    const id = await createCanvas(o);
+    if (id) setCanvasId(id);
+  };
+  const openAnswerCanvas = async (i: number) => {
+    if (!c) return;
+    const m = c.msgs[i];
+    if (!m?.content) return;
+    if (m.canvasId) { setCanvasId(m.canvasId); return; }
+    const id = await createCanvas({ content: m.content, kind: "doc" });
+    if (!id) return;
+    setCanvasId(id);
+    const updated = [...c.msgs];
+    updated[i] = { ...m, canvasId: id };
+    patchChat(c.id, { msgs: updated });
+    api("/api/chats", { method: "POST", body: JSON.stringify({ id: c.id, title: c.title, at: c.at, msgs: updated.filter((x) => !x.streaming), pinned: !!c.pinned, projectId: c.projectId ?? undefined }) }).catch(() => {});
+  };
+  const onCanvasDeleted = (id: string) => {
+    if (!c) return;
+    const idx = c.msgs.findIndex((m) => m.canvasId === id);
+    if (idx < 0) return;
+    const updated = [...c.msgs];
+    updated[idx] = { ...updated[idx], canvasId: undefined };
+    patchChat(c.id, { msgs: updated });
+    api("/api/chats", { method: "POST", body: JSON.stringify({ id: c.id, title: c.title, at: c.at, msgs: updated.filter((x) => !x.streaming), pinned: !!c.pinned, projectId: c.projectId ?? undefined }) }).catch(() => {});
+  };
+  // a canvas belongs to the chat it was opened from → close it when switching chats
+  React.useEffect(() => { setCanvasId(null); resetPython(); }, [curId]);
+
+  const activeProject = projects.find((p) => p.id === (c?.projectId ?? curProjectId)) || null;
+
   const sidebarProps = {
     chats,
     curId,
@@ -648,6 +881,12 @@ export function ChatApp({ config }: { config: AppConfig }) {
     onDuplicate: onDuplicate,
     onGlobalSearch: () => setGlobalSearchOpen(true),
     streamingChatId: busy ? curId : null,
+    projects,
+    curProjectId,
+    onPickProject: pickProject,
+    onNewProject: () => setProjectDlg({ open: true, id: null }),
+    onEditProject: (id: string) => setProjectDlg({ open: true, id }),
+    onMoveChat: moveChat,
   };
 
   // shared profile props
@@ -658,6 +897,7 @@ export function ChatApp({ config }: { config: AppConfig }) {
     onLegal: () => { setLegalTab("terms"); setLegalOpen(true); },
     onSettings: () => setSettingsOpen(true),
     onStats: () => setStatsOpen(true),
+    onMemory: () => setMemoryOpen(true),
     onArchived: () => setArchivedOpen(true),
     onExportCurrent: exportCurrent,
     onClearChats: onClearAll,
@@ -691,9 +931,9 @@ export function ChatApp({ config }: { config: AppConfig }) {
       </Sheet>
 
       {/* main */}
-      <main className="relative flex min-w-0 flex-1 flex-col">
+      <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* top bar */}
-        <header className="flex h-14 items-center gap-1.5 px-2.5 sm:px-3">
+        <header className="flex h-14 items-center gap-1.5 overflow-x-auto px-2.5 [scrollbar-width:none] sm:px-3">
           <Button
             size="icon"
             variant="ghost"
@@ -704,6 +944,16 @@ export function ChatApp({ config }: { config: AppConfig }) {
             <Menu className="size-5" />
           </Button>
           <ModelSelector models={config.models} value={model} onChange={(id) => { setModel(id); modelStore.set(id); }} />
+          {activeProject && (
+            <button
+              type="button"
+              onClick={() => setProjectDlg({ open: true, id: activeProject.id })}
+              className="hidden max-w-[200px] items-center gap-1.5 truncate rounded-full border border-arpa/30 bg-arpa/5 px-2.5 py-1 text-xs font-medium hover:bg-arpa/10 sm:inline-flex"
+              title="Project settings — instructions & files are used in this chat"
+            >
+              <span>{activeProject.emoji}</span><span className="truncate">{activeProject.name}</span>
+            </button>
+          )}
           <div className="flex-1" />
           {/* command palette trigger (looks like a search bar on desktop) */}
           <button
@@ -819,7 +1069,11 @@ export function ChatApp({ config }: { config: AppConfig }) {
           />
         </div>
         <div ref={scrollRef} onScroll={onScroll} className="scrollbar-thin flex-1 overflow-y-auto">
-          {fresh ? (
+          {loadingMsgs ? (
+            <div className="grid h-full place-items-center" data-testid="chat-loading">
+              <span className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Loading conversation…</span>
+            </div>
+          ) : fresh ? (
             <div className="flex h-full flex-col">
               <div className="flex flex-1 flex-col items-center justify-center px-4 pt-8">
                 <div className="arpa-zoom mb-3 grid size-12 place-items-center rounded-2xl bg-arpa text-xl font-extrabold text-arpa-foreground shadow-lg shadow-arpa/20">A</div>
@@ -830,6 +1084,7 @@ export function ChatApp({ config }: { config: AppConfig }) {
               </div>
             </div>
           ) : c ? (
+            <CanvasContext.Provider value={openCodeCanvas}>
             <div className="mx-auto max-w-3xl px-4 pb-6 pt-3 sm:px-5">
               {c.msgs.map((m, i) => {
                 // V3.8: date separator — show before a message if the day changed
@@ -851,13 +1106,19 @@ export function ChatApp({ config }: { config: AppConfig }) {
                         onReaction={m.role === "assistant" ? (r) => onReaction(i, r) : undefined}
                         searchQuery={chatSearchOpen ? chatSearchQuery : undefined}
                         wantsDoc={m.role === "assistant" && c.msgs[i - 1]?.role === "user" && DOC_REQUEST_RE.test(c.msgs[i - 1].content)}
+                        onMemory={m.role === "assistant" && m.memorySuggestion ? (a) => onMemoryAction(i, a) : undefined}
                         docFallbackTitle={m.role === "assistant" && c.msgs[i - 1]?.role === "user" ? c.msgs[i - 1].content.replace(/\s+/g, " ").slice(0, 70) : undefined}
+                        onCanvas={m.role === "assistant" && m.content && !m.error && !m.genImage ? () => openAnswerCanvas(i) : undefined}
+                        onRunCode={m.role === "assistant" && !busy ? (code) => executeCode(c.id, i, code, { send: false }) : undefined}
+                        onSendCode={m.role === "assistant" && m.codeResult && !busy && c.msgs[i + 1]?.codeOutput !== true ? () => sendCodeOutput(c.id, i) : undefined}
+                        codeStatus={m.codeRunning ? codeStatus : undefined}
                       />
                     </div>
                   </React.Fragment>
                 );
               })}
             </div>
+            </CanvasContext.Provider>
           ) : null}
         </div>
 
@@ -888,6 +1149,8 @@ export function ChatApp({ config }: { config: AppConfig }) {
           onSearch={() => setSearchOpen(true)}
         />
       </main>
+
+      {canvasId && <CanvasPanel key={canvasId} id={canvasId} onClose={() => setCanvasId(null)} onDeleted={onCanvasDeleted} />}
 
       {/* modals */}
       <PlansModal
@@ -925,6 +1188,18 @@ export function ChatApp({ config }: { config: AppConfig }) {
         onStats={() => setStatsOpen(true)}
         onPlans={() => setPlansOpen(true)}
       />
+      <ProjectDialog
+        open={projectDlg.open}
+        onOpenChange={(o) => setProjectDlg((d) => ({ ...d, open: o }))}
+        projectId={projectDlg.id}
+        onSaved={(id) => { loadProjects(); if (!projectDlg.id) { setCurProjectId(id); setCurId(null); setProjectDlg({ open: true, id }); } }}
+        onDeleted={(id) => {
+          loadProjects();
+          useArpa.setState((st) => ({ chats: st.chats.map((x) => (x.projectId === id ? { ...x, projectId: null } : x)) }));
+          if (curProjectId === id) setCurProjectId(null);
+        }}
+      />
+      <MemoryDialog open={memoryOpen} onOpenChange={setMemoryOpen} />
       <ChatSettingsDialog
         open={chatSettingsOpen}
         onOpenChange={setChatSettingsOpen}
@@ -965,7 +1240,7 @@ export function ChatApp({ config }: { config: AppConfig }) {
           // only add if not already in the list (avoid duplicate key warnings)
           const state = useArpa.getState();
           if (!state.chats.find((x) => x.id === chat.id)) {
-            const sorted = [...state.chats, chat].sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.at - a.at);
+            const sorted = [...state.chats, { ...chat, msgs: chat.msgs || [], msgsLoaded: false }].sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.at - a.at);
             state.setChats(sorted);
           }
         }}

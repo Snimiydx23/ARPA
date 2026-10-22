@@ -1,6 +1,6 @@
 // ARPA V3 — client state (Zustand). Replaces V2's global `S` object.
 import { create } from "zustand";
-import type { AppConfig, ArpaUser, Chat, ChatMsg, Model, SubStatus } from "@/lib/arpa-client";
+import type { AppConfig, ArpaUser, Chat, ChatMsg, Model, Project, SubStatus } from "@/lib/arpa-client";
 
 type ArpaState = {
   config: AppConfig | null;
@@ -14,8 +14,12 @@ type ArpaState = {
   ctrl: AbortController | null;
   booting: boolean;
   authError: string;
+  projects: Project[];
+  curProjectId: string | null; // project view selected in the sidebar (null = all chats)
 
   // setters
+  setProjects: (p: Project[]) => void;
+  setCurProjectId: (id: string | null) => void;
   setConfig: (c: AppConfig) => void;
   setSession: (data: { user: ArpaUser; sub: SubStatus; usedToday: number }) => void;
   setSub: (s: SubStatus) => void;
@@ -43,7 +47,11 @@ export const useArpa = create<ArpaState>((set, get) => ({
   ctrl: null,
   booting: true,
   authError: "",
+  projects: [],
+  curProjectId: null,
 
+  setProjects: (projects) => set({ projects }),
+  setCurProjectId: (id) => set({ curProjectId: id }),
   setConfig: (c) => set({ config: c }),
   setSession: (data) =>
     set({ user: data.user, sub: data.sub, usedToday: data.usedToday, booting: false, authError: "" }),

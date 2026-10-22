@@ -15,17 +15,38 @@ export async function GET(req: Request) {
 
   const chats = await db.chat.findMany({
     where: { userId: u.id, archived: false },
-    select: { id: true, title: true, at: true, msgs: true, pinned: true },
+    select: { id: true, title: true, at: true, msgs: true, pinned: true, storage: true },
     orderBy: [{ pinned: "desc" }, { at: "desc" }],
     take: 150,
   });
+
+  // table-stored chats: let the database find matching messages instead of loading every conversation
+  const tableIds = chats.filter((c: any) => c.storage === "table").map((c) => c.id);
+  const rowHits: any[] = tableIds.length
+    ? (await db.message.findMany({
+        where: { chatId: { in: tableIds }, content: { contains: q, mode: "insensitive" } },
+        select: { chatId: true, idx: true, role: true, content: true },
+        orderBy: [{ chatId: "asc" }, { idx: "asc" }],
+        take: 300,
+      })) || []
+    : [];
+  const hitsByChat = new Map<string, any[]>();
+  for (const h of rowHits) { const l = hitsByChat.get(h.chatId) || []; l.push(h); hitsByChat.set(h.chatId, l); }
 
   type Hit = { chatId: string; chatTitle: string; chatAt: number; msgIdx: number; role: string; snippet: string; pinned: boolean };
   const results: Hit[] = [];
   for (const c of chats) {
     let msgs: any[] = [];
-    try { msgs = JSON.parse(c.msgs || "[]"); } catch {}
-    msgs.forEach((m, i) => {
+    let idxs: number[] | null = null;
+    if ((c as any).storage === "table") {
+      const hs = hitsByChat.get(c.id) || [];
+      msgs = hs.map((h) => ({ role: h.role, content: h.content }));
+      idxs = hs.map((h) => h.idx);
+    } else {
+      try { msgs = JSON.parse(c.msgs || "[]"); } catch {}
+    }
+    msgs.forEach((m, j) => {
+      const i = idxs ? idxs[j] : j;
       const content = (m?.content || "").toLowerCase();
       if (content.includes(q)) {
         // build a snippet around the match

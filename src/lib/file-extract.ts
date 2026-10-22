@@ -8,7 +8,7 @@
 
 import { prepareImage, type PickedImage } from "@/components/arpa/image-attach";
 
-export type PickedFile = { name: string; text: string; size: number; pages?: number; truncated?: boolean };
+export type PickedFile = { name: string; text: string; size: number; pages?: number; truncated?: boolean; raw?: string[] /* data files kept for the Python sandbox */ };
 export type Extracted =
   | { kind: "image"; img: PickedImage }
   | { kind: "file"; file: PickedFile };

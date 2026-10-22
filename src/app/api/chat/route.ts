@@ -1,161 +1,273 @@
-// POST /api/chat — AI streaming chat (V3: replaces V2 api/chat.js)
-// Uses NVIDIA Nemotron via NIM's OpenAI-compatible API (src/lib/llm.ts).
-// Upstream SSE is parsed and re-emitted as per-token SSE in the same format the client expects.
-import { nvChat, noThinking, VISION_MODEL, VISION_KEY } from "@/lib/llm";
+// POST /api/chat — streaming AI chat through the ARPA AI Gateway.
+// validate → auth → rate limit → quota → build context → route (AUTO/FAST/BALANCED/QUALITY or manual model)
+// → stream with retry + model fallback → usage tracking. SSE output format is unchanged for the client:
+//   data: {"choices":[{"delta":{"content":"…"},"finish_reason":null}]}  …  data: "[DONE]"
 import { db } from "@/lib/db";
-import {
-  CFG, models, bearerUid, status, takeQuota, json, systemPrompt,
-} from "@/lib/arpa";
+import { CFG, bearerUid, status, takeQuota, refundQuota, json, systemPrompt, blockedResponse, codeInterpreterPrompt } from "@/lib/arpa";
+import { parseBody, ChatRequestSchema } from "@/lib/validate";
+import { enforceRate } from "@/lib/rate-limit";
+import { logger } from "@/lib/log";
+import { streamChat, GatewayError } from "@/services/ai/gateway";
+import { recordUsage } from "@/services/ai/usage";
+import type { AIMessage, Usage } from "@/services/ai/types";
+import { projectContext } from "@/services/projects";
+import { memoryContext } from "@/services/memory";
+import { runAgent, isAgentRequest, stripAgentCommand } from "@/services/agent";
+import { research, researchAvailable, researchMode, buildSourcesBlock, publicSources, type ResearchResult } from "@/services/research";
 
 const MAX_CTX_CHARS = CFG.maxCtx;
-// Max characters of an attached document sent to the model (per message)
-const FILE_CHARS = Number(process.env.MAX_FILE_CHARS || 150000);
-// Allow long streamed answers on Vercel (seconds)
+const FILE_CHARS = Number(process.env.MAX_FILE_CHARS || 150000); // attached document text per message
+const HEARTBEAT_MS = 15_000;
 export const maxDuration = 300;
 
-function pickTemperature(body: unknown): number {
-  if (!body || typeof body !== "object") return 0.3;
-  const v = (body as { temperature?: unknown }).temperature;
-  const n = Number(v);
-  if (!Number.isFinite(n) || n < 0 || n > 1.5) return 0.3;
-  return n;
-}
+type Ctx = { role: "user" | "assistant"; content: string; images?: string[] };
 
 export async function POST(req: Request) {
+  const log = logger("chat", req);
   const uid = bearerUid(req);
   if (!uid) return json({ error: "Session expired, please log in again." }, 401);
 
-  // fetch user + subscription
+  const limited = await enforceRate("chat", uid);
+  if (limited) return limited;
+
+  const { data: body, error } = await parseBody(req, ChatRequestSchema);
+  if (error) return error;
+
   const dbUser = await db.user.findUnique({ where: { uid } });
   if (!dbUser) return json({ error: "User record not found. Please log in again." }, 401);
-
+  if (dbUser.blocked) return blockedResponse();
   const st = status(dbUser);
   if (st.state === "expired") {
     return json({ error: "Your free trial has ended. Please pick a plan to keep chatting.", code: "EXPIRED" }, 402);
   }
-  const q = await takeQuota(dbUser.id, st.limit);
-  if (!q.ok) {
-    return json({
-      error: `Today's limit (${st.limit} messages) has been reached. Please try again tomorrow` +
-        (st.state === "trial" ? " or upgrade your plan." : "."),
-      code: "LIMIT",
-    }, 429);
-  }
 
-  let body: any;
-  try { body = await req.json(); } catch { return json({ error: "Bad request" }, 400); }
-
-  const list = models();
-  const model = list.some(m => m.id === body.model) ? body.model : list[0].id;
-  const temperature = pickTemperature(body);
-  // V3.5: optional per-chat custom system prompt (persona/instructions)
-  const customPrompt = typeof body.systemPrompt === "string" ? body.systemPrompt.slice(0, 2000) : "";
-
-  // History trim — keep recent messages within context budget
-  const msgs = (Array.isArray(body.messages) ? body.messages : [])
-    .filter((m: any) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim())
-    .map((m: any) => {
-      const o: { role: string; content: string; images?: string[] } = { role: m.role as string, content: m.content.slice(0, 40000) };
+  // ---- build context (history trimmed to the char budget, newest first) ----
+  const msgs: Ctx[] = body.messages
+    .filter((m) => m.content.trim())
+    .map((m) => {
+      const o: Ctx = { role: m.role, content: m.content.slice(0, 40000) };
       if (m.role === "user") {
-        // optional attached document text → folded into the message for the model
-        if (m.file && typeof m.file.text === "string" && m.file.text.trim()) {
-          const name = String(m.file.name || "file").slice(0, 200);
+        if (m.file?.text?.trim()) {
+          const name = m.file.name.replace(/["<>]/g, "").slice(0, 200) || "file";
           o.content = `[Attached file: ${name}]\n<file name="${name}">\n${m.file.text.slice(0, FILE_CHARS)}\n</file>\n\n${o.content}`;
         }
-        // optional attached image(s) (data-URLs): main image + extra pages (scanned PDF), max 5
-        const imgs = [m.image, ...(Array.isArray(m.images) ? m.images : [])]
-          .filter((u: unknown) => typeof u === "string" && /^data:image\/[a-z+]+;base64,/i.test(u as string) && (u as string).length < 6_000_000)
-          .slice(0, 5) as string[];
+        const imgs = [m.image, ...(m.images || [])].filter((u): u is string => !!u).slice(0, 5);
         if (imgs.length) o.images = imgs;
       }
       return o;
     });
-  if (!msgs.length || msgs[msgs.length - 1].role !== "user") {
-    return json({ error: "Message is empty" }, 400);
-  }
+  if (!msgs.length || msgs[msgs.length - 1].role !== "user") return json({ error: "Message is empty" }, 400);
+
   let total = 0, start = msgs.length;
   while (start > 0 && total + msgs[start - 1].content.length <= MAX_CTX_CHARS) {
     total += msgs[start - 1].content.length;
     start--;
   }
   if (start === msgs.length) start = msgs.length - 1;
-
-  // V3.5: build the system prompt — base ARPA prompt + optional custom persona
-  let basePrompt = systemPrompt(dbUser.name || "User");
-  if (customPrompt.trim()) {
-    basePrompt += `\n\nADDITIONAL PERSONA/INSTRUCTIONS FOR THIS CHAT:\n${customPrompt.trim()}`;
-  }
   const recent = msgs.slice(start);
-  // if any message in context carries an image → use the multimodal model for this turn
-  const hasImage = recent.some((m: any) => m.images?.length);
-  const useModel = hasImage ? VISION_MODEL : model;
-  const messages = [
-    { role: "system", content: basePrompt },
-    ...recent.map((m: any) =>
+  const hasImage = recent.some((m) => m.images?.length);
+
+  // system prompt = ARPA base (+ memory rules) + saved memories + project instructions/knowledge + chat persona
+  const memoryOn = dbUser.memoryEnabled;
+  // retrieval query for project files = the latest user message (+ the previous one, for follow-ups like "aur DSCR?")
+  const userTexts = body.messages.filter((m) => m.role === "user").map((m) => m.content);
+  const ragQuery = userTexts.slice(-2).join("\n").slice(-2000);
+  const [memBlock, projCtx] = await Promise.all([
+    memoryOn ? memoryContext(dbUser.id).catch(() => "") : Promise.resolve(""),
+    body.projectId ? projectContext(dbUser.id, body.projectId, ragQuery).catch(() => undefined) : Promise.resolve(undefined),
+  ]);
+  if (body.projectId && projCtx === null) return json({ error: "Project not found" }, 404);
+  const projBlock = projCtx?.block;
+  const fileSources = projCtx?.fileSources || [];
+  let sys = systemPrompt(dbUser.name || "User", { memory: memoryOn, web: researchAvailable() });
+  if (memBlock) sys += `\n\n${memBlock}`;
+  if (projBlock) sys += `\n\n${projBlock}`;
+  if (body.codeInterpreter) sys += `\n\n${codeInterpreterPrompt(body.codeInterpreter.files)}`;
+  if (body.systemPrompt?.trim()) sys += `\n\nADDITIONAL PERSONA/INSTRUCTIONS FOR THIS CHAT:\n${body.systemPrompt.trim()}`;
+  const messages: AIMessage[] = [
+    { role: "system", content: sys },
+    ...recent.map((m): AIMessage =>
       m.images?.length
-        ? { role: m.role, content: [{ type: "text", text: m.content }, ...m.images.map((url: string) => ({ type: "image_url", image_url: { url } }))] }
-        : { role: m.role, content: m.content }
+        ? { role: m.role, content: [{ type: "text", text: m.content }, ...m.images.map((url) => ({ type: "image_url" as const, image_url: { url } }))] }
+        : { role: m.role, content: m.content },
     ),
   ];
-  // per-model extras: Nemotron → thinking off; vision model → optional reasoning_effort
-  const extras: Record<string, unknown> = hasImage
-    ? (process.env.VISION_REASONING_EFFORT ? { reasoning_effort: process.env.VISION_REASONING_EFFORT } : {})
-    : noThinking;
 
-  // Build SSE stream from NVIDIA NIM and re-emit per-token `data:` frames.
+  // ---- quota (after validation so bad requests don't cost a message) ----
+  const q = await takeQuota(dbUser.id, st.limit);
+  if (!q.ok) {
+    return json({
+      error: `Today's limit (${st.limit} messages) has been reached. Please try again tomorrow` + (st.state === "trial" ? " or upgrade your plan." : "."),
+      code: "LIMIT",
+    }, 429);
+  }
+
+  // ---- web research? (heuristic, free) → stream-first path so the user sees progress ----
+  const last = body.messages[body.messages.length - 1];
+  const agentMode = isAgentRequest(body.model, last.content);
+  const mode = !agentMode && researchAvailable()
+    ? researchMode(last.content, { hasAttachment: !!(last.file?.text || last.image || last.images?.length) })
+    : null;
+  const t0 = Date.now();
+  const routeInput = { requested: agentMode ? "quality" : body.model, hasImage, totalChars: total, lastUserText: recent[recent.length - 1].content.slice(-4000) };
+  const baseHeaders = {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    "x-accel-buffering": "no",
+    "x-arpa-used": String(q.used),
+    "x-arpa-limit": String(st.limit),
+    "x-request-id": log.rid,
+    ...(projCtx ? { "x-arpa-project-context": projCtx.mode } : {}),
+  };
+
+  if (agentMode) {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        const write = (s: string) => { try { controller.enqueue(encoder.encode(s)); } catch {} };
+        const send = (obj: unknown) => write(`data: ${JSON.stringify(obj)}\n\n`);
+        const hb = setInterval(() => write(`: ping\n\n`), HEARTBEAT_MS);
+        try {
+          if (fileSources.length) send({ arpa: { fileSources } });
+          const context = recent.slice(-7, -1).map((m) => `${m.role}: ${m.content.slice(0, 600)}`).join("\n");
+          const question = stripAgentCommand(last.content);
+          const attached = last.file?.text ? `\n\nATTACHED FILE "${last.file.name.slice(0, 100)}" (start):\n${last.file.text.slice(0, 8000)}` : "";
+          const result = await runAgent({
+            question: question + attached, context, userId: dbUser.id, projectId: body.projectId, signal: req.signal, fileOffset: fileSources.length,
+            onEvent: (e) => send({ arpa: e.fileSources ? { ...e, fileSources: [...fileSources, ...e.fileSources] } : e }),
+          });
+          log.info("agent.done", { uid, steps: result.steps.length, stoppedBy: result.stoppedBy, tools: result.steps.map((x) => x.tool) });
+          void recordUsage({ userId: dbUser.id, kind: "tool", modelId: "agent", latencyMs: Date.now() - t0, ok: true, routeReason: `agent: ${result.steps.length} steps (${result.stoppedBy})` });
+
+          // same conversation as a normal turn (attachments kept), with the "/agent" command removed
+          const stripCmd = (c: string) => c.replace(/(^|\n)\s*\/agent\b\s*/i, "$1");
+          const lastMsg = messages[messages.length - 1];
+          const cleanedLast: AIMessage = typeof lastMsg.content === "string"
+            ? { ...lastMsg, content: stripCmd(lastMsg.content) }
+            : { ...lastMsg, content: (lastMsg.content as any[]).map((p) => (p.type === "text" ? { ...p, text: stripCmd(p.text) } : p)) } as AIMessage;
+          const rMessages: AIMessage[] = [
+            { role: "system", content: result.notes ? `${sys}\n\n${result.notes}` : sys },
+            ...messages.slice(1, -1),
+            cleanedLast,
+          ];
+          let conn: Awaited<ReturnType<typeof streamChat>>;
+          try {
+            conn = await streamChat(
+              { ...routeInput, totalChars: total + result.notes.length },
+              { messages: rMessages, temperature: body.temperature ?? 0.3, maxTokens: CFG.maxTokens, signal: req.signal },
+            );
+          } catch (e: any) {
+            if (e?.name === "AbortError") throw e;
+            await refundQuota(dbUser.id);
+            log.error("route.fail", e, { uid, mode: "agent" });
+            send({ error: { message: e instanceof GatewayError ? e.message : "The AI service is temporarily unavailable. Please try again.", code: "AI_UNAVAILABLE" } });
+            send("[DONE]");
+            return;
+          }
+          send({ arpa: { model: conn.model.label, status: null } });
+          await pipe(conn, send, { userId: dbUser.id, uid, t0, log, routeReason: `${conn.decision.policy}: agent` });
+        } catch (e: any) {
+          if (e?.name !== "AbortError") {
+            log.error("agent.stream.fail", e, { uid });
+            send({ error: { message: "The answer was interrupted. Press Continue or Regenerate." } });
+          }
+        } finally {
+          clearInterval(hb);
+          try { controller.close(); } catch {}
+        }
+      },
+    });
+    return new Response(stream, { headers: { ...baseHeaders, "x-arpa-route": "agent" } });
+  }
+
+  if (mode) {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        const write = (s: string) => { try { controller.enqueue(encoder.encode(s)); } catch {} };
+        const send = (obj: unknown) => write(`data: ${JSON.stringify(obj)}\n\n`);
+        const hb = setInterval(() => write(`: ping\n\n`), HEARTBEAT_MS);
+        try {
+          if (fileSources.length) send({ arpa: { fileSources } });
+          let result: ResearchResult;
+          try {
+            const context = recent.slice(-5, -1).map((m) => `${m.role}: ${m.content.slice(0, 400)}`).join("\n");
+            result = await research(last.content, mode, {
+              userId: dbUser.id, context, signal: req.signal,
+              onStatus: (s) => send({ arpa: { status: s } }),
+            });
+          } catch (e: any) {
+            if (e?.name === "AbortError" || req.signal.aborted) throw e;
+            log.warn("research.fail", { uid, err: e?.message });
+            result = { mode, queries: [], sources: [] };
+          }
+          void recordUsage({ userId: dbUser.id, kind: "tool", modelId: "tavily:web_search", latencyMs: Date.now() - t0, ok: result.sources.length > 0, routeReason: `${mode}: ${result.queries.length} queries` });
+          if (result.sources.length) send({ arpa: { sources: publicSources(result.sources) } });
+          send({ arpa: { status: mode === "deep" ? "Writing report…" : "Writing answer…" } });
+
+          const block = buildSourcesBlock(result);
+          const rMessages: AIMessage[] = [{ role: "system", content: `${sys}\n\n${block}` }, ...messages.slice(1)];
+          let conn: Awaited<ReturnType<typeof streamChat>>;
+          try {
+            conn = await streamChat(
+              { ...routeInput, requested: mode === "deep" && (!body.model || body.model === "auto") ? "quality" : body.model, totalChars: total + block.length },
+              { messages: rMessages, temperature: body.temperature ?? 0.3, maxTokens: CFG.maxTokens, signal: req.signal },
+            );
+          } catch (e: any) {
+            if (e?.name === "AbortError") throw e;
+            await refundQuota(dbUser.id);
+            const attempts = e instanceof GatewayError ? e.attempts : [];
+            log.error("route.fail", e, { uid, attempts, mode });
+            void recordUsage({ userId: dbUser.id, kind: "chat", modelId: attempts[0]?.model, latencyMs: Date.now() - t0, ok: false, error: e?.message });
+            send({ error: { message: e instanceof GatewayError ? e.message : "The AI service is temporarily unavailable. Please try again.", code: "AI_UNAVAILABLE" } });
+            send("[DONE]");
+            return;
+          }
+          log.info("route.ok", { uid, model: conn.model.id, policy: conn.decision.policy, mode, sources: result.sources.length, connectMs: Date.now() - t0 });
+          send({ arpa: { model: conn.model.label, status: null } });
+          await pipe(conn, send, { userId: dbUser.id, uid, t0, log, routeReason: `${conn.decision.policy}: ${mode} research` });
+        } catch (e: any) {
+          if (e?.name !== "AbortError") {
+            log.error("research.stream.fail", e, { uid });
+            send({ error: { message: "The answer was interrupted. Press Continue or Regenerate." } });
+          }
+        } finally {
+          clearInterval(hb);
+          try { controller.close(); } catch {}
+        }
+      },
+    });
+    return new Response(stream, { headers: { ...baseHeaders, "x-arpa-route": `research-${mode}` } });
+  }
+
+  // ---- route + connect (fallback happens here, before any byte is sent) ----
+  let conn: Awaited<ReturnType<typeof streamChat>>;
+  try {
+    conn = await streamChat(routeInput, { messages, temperature: body.temperature ?? 0.3, maxTokens: CFG.maxTokens, signal: req.signal });
+  } catch (e: any) {
+    if (e?.name === "AbortError") return new Response(null, { status: 499 });
+    await refundQuota(dbUser.id);
+    const attempts = e instanceof GatewayError ? e.attempts : [];
+    log.error("route.fail", e, { uid, attempts });
+    void recordUsage({ userId: dbUser.id, kind: "chat", modelId: attempts[0]?.model, latencyMs: Date.now() - t0, ok: false, error: e?.message });
+    return json({ error: e instanceof GatewayError ? e.message : "The AI service is temporarily unavailable. Please try again.", code: "AI_UNAVAILABLE" }, 503);
+  }
+  const { model, decision, attempts } = conn;
+  log.info("route.ok", { uid, model: model.id, policy: decision.policy, reason: decision.reason, attempts: attempts.length, connectMs: Date.now() - t0 });
+
+  // ---- stream to client ----
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (obj: unknown) => {
-        try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`)); } catch {}
-      };
+      const write = (s: string) => { try { controller.enqueue(encoder.encode(s)); } catch {} };
+      const send = (obj: unknown) => write(`data: ${JSON.stringify(obj)}\n\n`);
+      // SSE comment heartbeat keeps proxies from closing idle connections while the model thinks
+      const hb = setInterval(() => write(`: ping\n\n`), HEARTBEAT_MS);
       try {
-        const upstream = await nvChat({
-          model: useModel,
-          messages,
-          stream: true,
-          temperature: hasImage ? 0.6 : temperature,
-          top_p: 0.95,
-          max_tokens: CFG.maxTokens,
-          ...extras,
-        }, req.signal, hasImage ? VISION_KEY : undefined);
-
-        let buf = "";
-        const handleText = (text: string) => {
-          buf += text;
-          const lines = buf.split("\n");
-          buf = lines.pop() || "";
-          for (const ln of lines) {
-            const t = ln.trim();
-            if (!t.startsWith("data:")) continue;
-            const payload = t.slice(5).trim();
-            if (!payload) continue;
-            if (payload === "[DONE]") return;
-            try {
-              const j = JSON.parse(payload);
-              const choice = j?.choices?.[0];
-              if (choice?.delta?.content) {
-                send({ choices: [{ delta: { content: choice.delta.content }, finish_reason: null }] });
-              }
-              if (choice?.finish_reason) {
-                send({ choices: [{ delta: {}, finish_reason: choice.finish_reason }] });
-              }
-            } catch {}
-          }
-        };
-
-        const reader = upstream.body!.getReader();
-        const dec = new TextDecoder();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          handleText(dec.decode(value, { stream: true }));
-        }
-        if (buf.trim()) handleText("\n");
-        send("[DONE]");
-      } catch (e: any) {
-        send({ error: { message: e?.message || "AI stream error" } });
+        if (fileSources.length) send({ arpa: { fileSources } });
+        await pipe(conn, send, { userId: dbUser.id, uid, t0, log, routeReason: `${decision.policy}: ${decision.reason}` });
       } finally {
+        clearInterval(hb);
         try { controller.close(); } catch {}
       }
     },
@@ -163,12 +275,44 @@ export async function POST(req: Request) {
 
   return new Response(stream, {
     headers: {
-      "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-cache, no-transform",
-      "x-accel-buffering": "no",
-      "x-arpa-model": hasImage ? "ARPA Vision" : (list.find(m => m.id === model)?.label || model),
-      "x-arpa-used": String(q.used),
-      "x-arpa-limit": String(st.limit),
+      ...baseHeaders,
+      "x-arpa-model": model.label,
+      "x-arpa-model-id": model.id,
+      "x-arpa-route": decision.policy,
     },
   });
+}
+
+/** Forward gateway events as OpenAI-style SSE chunks, then record usage. Never throws. */
+async function pipe(
+  conn: Awaited<ReturnType<typeof streamChat>>,
+  send: (obj: unknown) => void,
+  meta: { userId: string; uid: string; t0: number; log: ReturnType<typeof logger>; routeReason: string },
+) {
+  const { model } = conn;
+  let usage: Usage | undefined;
+  let ok = true, errMsg: string | undefined, firstTokenMs = 0;
+  try {
+    for await (const ev of conn.stream) {
+      if (ev.type === "text") {
+        if (!firstTokenMs) firstTokenMs = Date.now() - meta.t0;
+        send({ choices: [{ delta: { content: ev.text }, finish_reason: null }] });
+      } else if (ev.type === "finish") {
+        send({ choices: [{ delta: {}, finish_reason: ev.reason }] });
+      } else if (ev.type === "usage") {
+        usage = ev.usage;
+      }
+    }
+    send("[DONE]");
+  } catch (e: any) {
+    ok = false;
+    errMsg = e?.message || "AI stream error";
+    if (e?.name !== "AbortError") {
+      meta.log.error("stream.fail", e, { uid: meta.uid, model: model.id });
+      send({ error: { message: "The answer was interrupted. Press Continue or Regenerate." } });
+    }
+  } finally {
+    meta.log.info("stream.end", { uid: meta.uid, model: model.id, ok, firstTokenMs, totalMs: Date.now() - meta.t0, in: usage?.inputTokens, out: usage?.outputTokens });
+    await recordUsage({ userId: meta.userId, kind: "chat", model, usage, latencyMs: Date.now() - meta.t0, ok, error: errMsg, routeReason: meta.routeReason });
+  }
 }

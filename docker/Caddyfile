@@ -1,0 +1,16 @@
+# ARPA — automatic HTTPS (Let's Encrypt) in front of the app. Used by the "https" profile of docker-compose.yml.
+# Point your domain's DNS A record to this server, set DOMAIN in .env, then: docker compose --profile https up -d
+{$DOMAIN} {
+	encode zstd gzip
+	# long AI answers stream as Server-Sent Events — don't buffer them
+	reverse_proxy app:3000 {
+		flush_interval -1
+		transport http {
+			read_timeout 10m
+			write_timeout 10m
+		}
+	}
+	request_body {
+		max_size 20MB
+	}
+}

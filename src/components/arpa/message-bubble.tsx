@@ -4,7 +4,7 @@ import { fmtSize } from "@/lib/file-extract";
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
-import { Check, Copy, RefreshCw, Play, AlertTriangle, Volume2, Square, Loader2, Pencil, GitFork, ChevronDown, ThumbsUp, ThumbsDown, FileText, FileDown, Wand2, Download, Maximize2, X } from "lucide-react";
+import { Check, Copy, RefreshCw, Play, AlertTriangle, Volume2, Square, Loader2, Pencil, GitFork, ChevronDown, ThumbsUp, ThumbsDown, FileText, FileDown, Wand2, Download, Maximize2, X, Brain, PanelRightOpen, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -16,6 +16,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Markdown } from "./markdown";
 import { ImageGallery, hideStreamingMarker } from "./image-gallery";
+import { hideStreamingMemory } from "@/lib/memory-marker";
+import { SourceCards, ResearchStatus, FileSourceList, AgentSteps } from "./source-cards";
+import { CodeResultView } from "./code-result";
+import { CodeRunContext } from "@/lib/code-run-context";
+import { stripCitations, withSourceList } from "@/lib/citations";
+
 import { settingsStore, type ChatMsg, type Model } from "@/lib/arpa-client";
 
 function TypingDots() {
@@ -38,6 +44,10 @@ export function MessageBubble({
   onRegen,
   onContinue,
   onCopy,
+  onCanvas,
+  onRunCode,
+  onSendCode,
+  codeStatus,
   onEdit,
   onBranch,
   onReaction,
@@ -46,12 +56,17 @@ export function MessageBubble({
   searchQuery,
   wantsDoc,
   docFallbackTitle,
+  onMemory,
 }: {
   msg: ChatMsg;
   isLast: boolean;
   onRegen?: (modelOverride?: string) => void;
   onContinue?: () => void;
   onCopy?: (text: string) => void;
+  onCanvas?: () => void;
+  onRunCode?: (code: string) => void;
+  onSendCode?: () => void;
+  codeStatus?: string;
   onEdit?: (newText: string) => void;
   onBranch?: () => void;
   onReaction?: (reaction: "up" | "down" | null) => void;
@@ -60,7 +75,9 @@ export function MessageBubble({
   searchQuery?: string;
   wantsDoc?: boolean; // previous user message asked for a document → show download buttons prominently
   docFallbackTitle?: string;
+  onMemory?: (action: "save" | "dismiss") => Promise<void> | void;
 }) {
+  const [memBusy, setMemBusy] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
   const [ttsState, setTtsState] = React.useState<"idle" | "loading" | "playing">("idle");
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
@@ -75,7 +92,7 @@ export function MessageBubble({
     try {
       const { downloadAnswer, titleFromMarkdown } = await import("@/lib/doc-export");
       const hasHeading = /^#{1,3}\s+/m.test(msg.content);
-      await downloadAnswer(format, msg.content, hasHeading ? titleFromMarkdown(msg.content) : (docFallbackTitle || titleFromMarkdown(msg.content)));
+      await downloadAnswer(format, withSourceList(msg.content, msg.sources, msg.fileSources), hasHeading ? titleFromMarkdown(msg.content) : (docFallbackTitle || titleFromMarkdown(msg.content)));
       toast.success(format === "docx" ? "Word file downloaded ✓" : "PDF downloaded ✓");
     } catch (e: any) {
       toast.error(e?.message || "Could not create the file");
@@ -88,6 +105,15 @@ export function MessageBubble({
   React.useEffect(() => {
     return () => { if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ""; } };
   }, []);
+
+  if (msg.role === "user" && msg.codeOutput) {
+    return (
+      <details className="group mb-6 ml-10 rounded-lg border border-dashed border-border px-3 py-1.5 text-xs text-muted-foreground" data-testid="code-output-msg">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5"><Terminal className="size-3.5 text-arpa" /> Python output sent to ARPA</summary>
+        <pre className="mt-2 max-h-60 overflow-auto whitespace-pre-wrap font-mono text-[11px]">{msg.content}</pre>
+      </details>
+    );
+  }
 
   if (msg.role === "user" && !editing) {
     return (
@@ -216,10 +242,12 @@ export function MessageBubble({
       </div>
     );
   } else if (!msg.content && msg.streaming) {
-    body = <TypingDots />;
+    body = msg.agentSteps?.length || (msg.status && msg.model === "agent")
+      ? <AgentSteps steps={msg.agentSteps || []} live status={msg.status} />
+      : msg.status ? <ResearchStatus status={msg.status} sources={msg.sources} /> : <TypingDots />;
   } else {
     // ChatGPT-style: related images appear right after the first paragraph of the answer
-    const shown = msg.streaming ? hideStreamingMarker(msg.content) : msg.content;
+    const shown = msg.streaming ? hideStreamingMemory(hideStreamingMarker(msg.content)) : msg.content;
     let head = shown, rest = "";
     if (msg.imgQuery && !msg.streaming) {
       const cut = shown.search(/\n\s*\n/);
@@ -228,10 +256,14 @@ export function MessageBubble({
     }
     body = (
       <div className={msg.streaming ? "streaming-cursor" : ""}>
+        {!!msg.agentSteps?.length && <AgentSteps steps={msg.agentSteps} />}
         {msg.genImage && <GeneratedImageCard img={msg.genImage} />}
-        {head && <Markdown>{head}</Markdown>}
+        {head && <Markdown sources={msg.sources} fileSources={msg.fileSources}>{head}</Markdown>}
         {msg.imgQuery && !msg.streaming && <ImageGallery query={msg.imgQuery} />}
-        {rest && <Markdown>{rest}</Markdown>}
+        {rest && <Markdown sources={msg.sources} fileSources={msg.fileSources}>{rest}</Markdown>}
+        {(msg.codeRunning || msg.codeResult) && <CodeResultView r={msg.codeResult} running={msg.codeRunning} status={codeStatus} onSend={onSendCode} />}
+        {!msg.streaming && !!msg.fileSources?.length && <FileSourceList items={msg.fileSources} />}
+        {!!msg.sources?.length && <SourceCards sources={msg.sources} deep={msg.research === "deep"} />}
       </div>
     );
   }
@@ -282,7 +314,7 @@ export function MessageBubble({
       setTtsState("idle");
       return;
     }
-    const text = msg.content || "";
+    const text = stripCitations(msg.content || "");
     if (!text.trim()) return;
     const settings = settingsStore.get();
     // split into ≤1000 char chunks at sentence boundaries
@@ -347,7 +379,22 @@ export function MessageBubble({
       <div className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-arpa text-xs font-extrabold text-arpa-foreground shadow-sm">
         A
       </div>
-      <div className="min-w-0 flex-1">{body}
+      <div className="min-w-0 flex-1"><CodeRunContext.Provider value={onRunCode && !msg.streaming ? { run: onRunCode, running: !!msg.codeRunning } : null}>{body}</CodeRunContext.Provider>
+      {/* AI proposed a memory → ask before saving */}
+      {!msg.streaming && msg.memorySuggestion && !msg.memorySaved && onMemory && (
+        <div className="mt-3 flex max-w-xl flex-wrap items-center gap-2 rounded-xl border border-arpa/30 bg-arpa/5 px-3 py-2 text-sm">
+          <Brain className="size-4 shrink-0 text-arpa" />
+          <span className="min-w-0 flex-1"><span className="text-muted-foreground">Remember this? </span>{msg.memorySuggestion}</span>
+          <Button size="sm" className="h-7 bg-arpa text-arpa-foreground hover:opacity-90" disabled={memBusy}
+            onClick={async () => { setMemBusy(true); try { await onMemory("save"); } finally { setMemBusy(false); } }}>
+            {memBusy ? <Loader2 className="size-3.5 animate-spin" /> : "Save"}
+          </Button>
+          <Button size="sm" variant="ghost" className="h-7" disabled={memBusy} onClick={() => onMemory("dismiss")}>Not now</Button>
+        </div>
+      )}
+      {!msg.streaming && msg.memorySuggestion && msg.memorySaved && (
+        <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground"><Brain className="size-3.5 text-arpa" /> Saved to memory</p>
+      )}
       {/* prominent Word / PDF buttons when the user asked for a document */}
       {!msg.streaming && wantsDoc && msg.content && !msg.error && (
         <div className="mt-3 flex flex-wrap gap-2">
@@ -376,6 +423,11 @@ export function MessageBubble({
               >
                 {ttsState === "loading" ? <Loader2 className="size-3.5 animate-spin" /> : ttsState === "playing" ? <Square className="size-3.5" /> : <Volume2 className="size-3.5" />}
               </Button>
+              {onCanvas && (
+                <Button size="icon" variant="ghost" className="size-7 text-muted-foreground hover:text-foreground" onClick={onCanvas} title="Open in canvas (edit with ARPA)">
+                  <PanelRightOpen className="size-3.5" />
+                </Button>
+              )}
               {/* download this answer as Word / PDF */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>

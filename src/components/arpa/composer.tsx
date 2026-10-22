@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { api } from "@/lib/arpa-client";
 import { ImageAttach, type PickedImage } from "./image-attach";
 import { extractFile, fmtSize, MAX_FILE_CHARS, type PickedFile } from "@/lib/file-extract";
+import { keepRawFile } from "@/lib/raw-files";
 
 export function Composer({
   busy,
@@ -115,7 +116,11 @@ export function Composer({
           if (r.kind === "image") {
             if (img || files.filter((x) => x.type.startsWith("image/")).length > 1) toast.message("Only one image per message — using the latest one.");
             setImg(r.img);
-          } else docs.push(r.file);
+          } else {
+            // keep the original bytes of CSV / Excel / JSON for the Python code interpreter (browser memory only)
+            const raw = await keepRawFile(f).catch(() => null);
+            docs.push(raw ? { ...r.file, raw: [raw] } : r.file);
+          }
         } catch (err: any) {
           toast.error(`${f.name}: ${err?.message || "could not read file"}`);
         }
@@ -132,6 +137,7 @@ export function Composer({
             size: all.reduce((n, d) => n + d.size, 0),
             text,
             truncated,
+            raw: all.flatMap((d) => d.raw || []),
           };
         });
       }

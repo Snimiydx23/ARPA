@@ -8,8 +8,9 @@
 //   IMAGE_MODEL_HD    default black-forest-labs/flux.1-dev
 //   IMAGE_API_KEY     separate nvapi key for image models (falls back to NVIDIA_API_KEY)
 import { db } from "@/lib/db";
-import { bearerUid, json, status, takeQuota, models } from "@/lib/arpa";
-import { nvChat, noThinking } from "@/lib/llm";
+import { bearerUid, json, status, takeQuota, blockedResponse } from "@/lib/arpa";
+import { complete } from "@/services/ai/gateway";
+import { enforceRate } from "@/lib/rate-limit";
 
 export const maxDuration = 300;
 
@@ -37,13 +38,13 @@ async function enhance(text: string): Promise<{ prompt: string; aspect: string }
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), ENHANCE_TIMEOUT_MS);
   try {
-    const resp = await nvChat({
-      stream: false,
-      model: process.env.TITLE_MODEL || models()[0].id,
-      temperature: 0.4,
-      max_tokens: 300,
-      ...noThinking,
-      messages: [
+    const resp = await complete(
+      { requested: process.env.TITLE_MODEL || "fast", hasImage: false, totalChars: text.length, lastUserText: text },
+      {
+        temperature: 0.4,
+        maxTokens: 300,
+        signal: ac.signal,
+        messages: [
         {
           role: "system",
           content:
@@ -55,8 +56,9 @@ async function enhance(text: string): Promise<{ prompt: string; aspect: string }
         },
         { role: "user", content: text },
       ],
-    }, ac.signal);
-    const raw = String(((await resp.json()) as any)?.choices?.[0]?.message?.content || "");
+      },
+    );
+    const raw = resp.text;
     const j = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
     const prompt = String(j.prompt || "").trim();
     const aspect = SIZES[j.aspect] ? j.aspect : guessAspect;
@@ -136,8 +138,11 @@ async function generate(model: string, prompt: string, w: number, h: number, see
 export async function POST(req: Request) {
   const uid = bearerUid(req);
   if (!uid) return json({ error: "Session expired, please log in again." }, 401);
+  const limited = await enforceRate("image", uid);
+  if (limited) return limited;
   const dbUser = await db.user.findUnique({ where: { uid } });
   if (!dbUser) return json({ error: "User record not found. Please log in again." }, 401);
+  if (dbUser.blocked) return blockedResponse();
 
   const st = status(dbUser);
   if (st.state === "expired") return json({ error: "Your free trial has ended. Please pick a plan to keep using ARPA.", code: "EXPIRED" }, 402);
