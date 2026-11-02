@@ -112,9 +112,25 @@ export const ls = {
   },
 };
 
+// Token is stored as a RAW string (not JSON). Older builds saved it via ls.set → JSON.stringify,
+// i.e. wrapped in quotes ("abc.def"), which broke the signature check on the server → 401 everywhere.
+// get() strips those quotes so already-logged-in users are fixed without re-login.
 export const tokenStore = {
-  get: () => (typeof window === "undefined" ? "" : window.localStorage.getItem(TOKEN_KEY) || ""),
-  set: (t: string) => ls.set(TOKEN_KEY, t),
+  get: (): string => {
+    if (typeof window === "undefined") return "";
+    try {
+      let t = (window.localStorage.getItem(TOKEN_KEY) || "").trim();
+      if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) {
+        try { t = String(JSON.parse(t)); } catch { t = t.slice(1, -1); }
+        window.localStorage.setItem(TOKEN_KEY, t); // migrate to raw format
+      }
+      return t;
+    } catch { return ""; }
+  },
+  set: (t: string) => {
+    if (typeof window === "undefined") return;
+    try { window.localStorage.setItem(TOKEN_KEY, String(t || "").trim()); } catch {}
+  },
   clear: () => ls.del(TOKEN_KEY),
 };
 
