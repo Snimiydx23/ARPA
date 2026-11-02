@@ -22,7 +22,7 @@ import { CodeResultView } from "./code-result";
 import { CodeRunContext } from "@/lib/code-run-context";
 import { stripCitations, withSourceList } from "@/lib/citations";
 
-import { settingsStore, type ChatMsg, type Model } from "@/lib/arpa-client";
+import { settingsStore, tokenStore, type ChatMsg, type Model } from "@/lib/arpa-client";
 
 function TypingDots() {
   return (
@@ -333,7 +333,7 @@ export function MessageBubble({
       for (const chunk of chunks) {
         const r = await fetch("/api/tts", {
           method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("arpa_token") || ""}` },
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokenStore.get()}` },
           body: JSON.stringify({ text: chunk, voice: settings.voice, speed: settings.ttsSpeed }),
         });
         if (!r.ok) {
