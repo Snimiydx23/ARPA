@@ -91,7 +91,8 @@ export function verifyToken(token: string): string | null {
 
 // Read bearer from Authorization header
 export function bearerUid(req: Request): string | null {
-  const t = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
+  // strip accidental JSON quotes ("abc.def") left by older clients
+  const t = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim().replace(/^"(.*)"$/, "$1");
   if (!t) return null;
   return verifyToken(t);
 }
