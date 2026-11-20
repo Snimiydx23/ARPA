@@ -3,12 +3,25 @@ import { withSourceList } from "./citations";
 export type Plan = { id: string; label: string; price: number; days: number };
 export type Model = { id: string; label: string; kind?: "policy" | "model"; provider?: string; vision?: boolean; reasoning?: boolean };
 export type SubStatus = {
-  state: "paid" | "trial" | "expired";
+  state: "paid" | "free" | "expired"; // expired = chat token limit reached
   until: number;
   daysLeft: number;
   plan: string;
   limit: number;
+  tokenLimit: number; // 0 = unlimited
+  tokensUsed: number;
+  tokenPeriod: "day" | "month" | "total";
+  resetAt: number;
 };
+
+/** 12500 → "12.5K", 1200000 → "1.2M" */
+export function fmtTokens(n: number) {
+  n = Number(n) || 0;
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace(/\.0$/, "") + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(n >= 100_000 ? 0 : 1).replace(/\.0$/, "") + "K";
+  return String(n);
+}
+export const tokenPeriodLabel = (p: SubStatus["tokenPeriod"]) => (p === "day" ? " today" : p === "month" ? " this month" : "");
 export type WebSource = { n: number; title: string; url: string; domain: string; snippet: string; published?: string };
 export type CodeResult = {
   code: string; ok: boolean; stdout: string; error?: string; ms: number;
@@ -84,6 +97,9 @@ export type AppConfig = {
   trialDays: number;
   limitPaid: number;
   limitTrial: number;
+  tokenLimitFree?: number;
+  tokenLimitPaid?: number;
+  tokenPeriod?: "day" | "month" | "total";
   plans: Plan[];
   models: Model[];
   support: string;
