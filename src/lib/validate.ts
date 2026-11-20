@@ -41,6 +41,8 @@ export const GoogleLoginSchema = z.object({
   accessToken: z.string().min(20).max(4000).optional(),
 }).refine((d) => !!(d.credential || d.accessToken), { message: "credential or accessToken is required" });
 
+export const FirebaseLoginSchema = z.object({ idToken: z.string().min(100).max(8000) });
+
 export const PlanSchema = z.object({ plan: z.string().min(1).max(40) });
 
 export const PayVerifySchema = z.object({

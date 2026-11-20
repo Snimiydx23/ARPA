@@ -105,6 +105,7 @@ export type AppConfig = {
   support: string;
   paymentMode: "live" | "simulated" | "disabled";
   googleClientId?: string;
+  firebase?: { apiKey: string; authDomain: string; projectId: string; appId?: string } | null;
   emailLogin?: boolean;
 };
 
