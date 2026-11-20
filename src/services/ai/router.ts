@@ -2,7 +2,7 @@
 // Input: what the user asked for (a concrete model id or a policy) + facts about the request.
 // Output: an ordered candidate list — first = chosen model, the rest = fallbacks with the same capabilities.
 import type { ModelInfo, Policy } from "./types";
-import { availableModels, getModel, isPolicy } from "./registry";
+import { availableModels, defaultModel, getModel, isPolicy } from "./registry";
 
 export type RouteInput = {
   requested?: string;      // model id or policy; default "auto"
@@ -64,6 +64,9 @@ export function route(input: RouteInput): RouteDecision {
   if (input.hasImage) reason += " + image → vision model";
 
   const ranked = [...pool].sort((a, b) => score(b, policy) - score(a, policy));
+  // "Auto" + DEFAULT_MODEL env → the default model goes first (others stay as fallbacks)
+  const def = req === "auto" && !(manual && pool.includes(manual)) ? defaultModel() : undefined;
+  if (def && pool.includes(def)) { ranked.splice(ranked.indexOf(def), 1); ranked.unshift(def); reason += ` → DEFAULT_MODEL ${def.id}`; }
   const candidates = manual && pool.includes(manual) ? [manual, ...ranked.filter((x) => x !== manual)] : ranked;
   return { candidates, policy: manual && pool.includes(manual) ? "manual" : policy, reason };
 }

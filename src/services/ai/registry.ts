@@ -6,19 +6,53 @@ import type { ModelInfo, Policy, ProviderConfig, ProviderId } from "./types";
 import { POLICIES } from "./types";
 
 /* ---------------- providers ---------------- */
+// Every provider below speaks the OpenAI /chat/completions format, so just setting its API key in env turns it on.
+// Optional per provider:  <PREFIX>_BASE_URL  (own endpoint / proxy)   <PREFIX>_MODELS = "modelId|Label,modelId2|Label2"
+// Any other OpenAI-compatible API:  AI_PROVIDER_1_URL, AI_PROVIDER_1_KEY, AI_PROVIDER_1_MODELS, AI_PROVIDER_1_NAME  (… up to _10)
+// Limit which providers are used:   AI_ONLY_PROVIDERS=openai,groq
+type KnownDef = { id: ProviderId; label: string; prefix: string; keyEnv: string; baseUrl: string; streamUsage: boolean };
+const KNOWN: KnownDef[] = [
+  { id: "nvidia", label: "NVIDIA NIM", prefix: "NVIDIA", keyEnv: "NVIDIA_API_KEY", baseUrl: "https://integrate.api.nvidia.com/v1", streamUsage: false },
+  { id: "openai", label: "OpenAI", prefix: "OPENAI", keyEnv: "OPENAI_API_KEY", baseUrl: "https://api.openai.com/v1", streamUsage: true },
+  { id: "anthropic", label: "Anthropic", prefix: "ANTHROPIC", keyEnv: "ANTHROPIC_API_KEY", baseUrl: "https://api.anthropic.com/v1", streamUsage: false },
+  { id: "google", label: "Google Gemini", prefix: "GEMINI", keyEnv: "GEMINI_API_KEY", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", streamUsage: true },
+  { id: "groq", label: "Groq", prefix: "GROQ", keyEnv: "GROQ_API_KEY", baseUrl: "https://api.groq.com/openai/v1", streamUsage: true },
+  { id: "openrouter", label: "OpenRouter", prefix: "OPENROUTER", keyEnv: "OPENROUTER_API_KEY", baseUrl: "https://openrouter.ai/api/v1", streamUsage: true },
+  { id: "deepseek", label: "DeepSeek", prefix: "DEEPSEEK", keyEnv: "DEEPSEEK_API_KEY", baseUrl: "https://api.deepseek.com/v1", streamUsage: true },
+  { id: "mistral", label: "Mistral", prefix: "MISTRAL", keyEnv: "MISTRAL_API_KEY", baseUrl: "https://api.mistral.ai/v1", streamUsage: false },
+  { id: "xai", label: "xAI Grok", prefix: "XAI", keyEnv: "XAI_API_KEY", baseUrl: "https://api.x.ai/v1", streamUsage: true },
+  { id: "together", label: "Together AI", prefix: "TOGETHER", keyEnv: "TOGETHER_API_KEY", baseUrl: "https://api.together.xyz/v1", streamUsage: true },
+  { id: "fireworks", label: "Fireworks AI", prefix: "FIREWORKS", keyEnv: "FIREWORKS_API_KEY", baseUrl: "https://api.fireworks.ai/inference/v1", streamUsage: true },
+  { id: "cerebras", label: "Cerebras", prefix: "CEREBRAS", keyEnv: "CEREBRAS_API_KEY", baseUrl: "https://api.cerebras.ai/v1", streamUsage: false },
+  { id: "perplexity", label: "Perplexity", prefix: "PERPLEXITY", keyEnv: "PERPLEXITY_API_KEY", baseUrl: "https://api.perplexity.ai", streamUsage: false },
+];
+const MAX_CUSTOM = 10;
+
+function onlyFilter(): Set<string> | null {
+  const raw = (process.env.AI_ONLY_PROVIDERS || "").toLowerCase().split(",").map((s) => s.trim()).filter(Boolean);
+  return raw.length ? new Set(raw) : null;
+}
+
 export function providerConfigs(): ProviderConfig[] {
   const e = process.env;
-  const list: (ProviderConfig | null)[] = [
-    e.NVIDIA_API_KEY ? { id: "nvidia", label: "NVIDIA NIM", baseUrl: e.NVIDIA_BASE_URL || "https://integrate.api.nvidia.com/v1", apiKey: e.NVIDIA_API_KEY, streamUsage: false } : null,
-    e.OPENAI_API_KEY ? { id: "openai", label: "OpenAI", baseUrl: e.OPENAI_BASE_URL || "https://api.openai.com/v1", apiKey: e.OPENAI_API_KEY, streamUsage: true } : null,
-    e.ANTHROPIC_API_KEY ? { id: "anthropic", label: "Anthropic", baseUrl: "https://api.anthropic.com/v1", apiKey: e.ANTHROPIC_API_KEY, streamUsage: false } : null,
-    e.GEMINI_API_KEY ? { id: "google", label: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", apiKey: e.GEMINI_API_KEY, streamUsage: true } : null,
-    e.GROQ_API_KEY ? { id: "groq", label: "Groq", baseUrl: "https://api.groq.com/openai/v1", apiKey: e.GROQ_API_KEY, streamUsage: true } : null,
-    e.OPENROUTER_API_KEY ? { id: "openrouter", label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", apiKey: e.OPENROUTER_API_KEY, streamUsage: true } : null,
-    e.OLLAMA_BASE_URL ? { id: "ollama", label: "Ollama (local)", baseUrl: e.OLLAMA_BASE_URL, apiKey: "ollama", streamUsage: false } : null,
-    e.CUSTOM_AI_BASE_URL ? { id: "custom", label: e.CUSTOM_AI_LABEL || "Custom", baseUrl: e.CUSTOM_AI_BASE_URL, apiKey: e.CUSTOM_AI_API_KEY, streamUsage: false } : null,
-  ];
-  return list.filter(Boolean) as ProviderConfig[];
+  const list: ProviderConfig[] = [];
+  for (const k of KNOWN) {
+    const key = e[k.keyEnv];
+    if (!key) continue;
+    list.push({ id: k.id, label: k.label, baseUrl: e[`${k.prefix}_BASE_URL`] || k.baseUrl, apiKey: key, streamUsage: k.streamUsage });
+  }
+  if (e.OLLAMA_BASE_URL) list.push({ id: "ollama", label: "Ollama (local)", baseUrl: e.OLLAMA_BASE_URL, apiKey: "ollama", streamUsage: false });
+  if (e.CUSTOM_AI_BASE_URL) list.push({ id: "custom", label: e.CUSTOM_AI_LABEL || "Custom", baseUrl: e.CUSTOM_AI_BASE_URL, apiKey: e.CUSTOM_AI_API_KEY, streamUsage: false });
+  for (let n = 1; n <= MAX_CUSTOM; n++) {
+    const url = e[`AI_PROVIDER_${n}_URL`];
+    if (!url) continue;
+    list.push({
+      id: `p${n}`, label: e[`AI_PROVIDER_${n}_NAME`] || `Provider ${n}`, baseUrl: url,
+      apiKey: e[`AI_PROVIDER_${n}_KEY`] || undefined, streamUsage: e[`AI_PROVIDER_${n}_STREAM_USAGE`] === "true",
+    });
+  }
+  const only = onlyFilter();
+  return only ? list.filter((p) => only.has(String(p.id).toLowerCase())) : list;
 }
 
 export function providerConfig(id: ProviderId): ProviderConfig | undefined {
@@ -54,6 +88,50 @@ function defaults(): ModelInfo[] {
   ];
 }
 
+/** "modelId|Label,modelId2|Label2" → models for one provider */
+function parseModelList(raw: string, provider: ProviderId, idPrefix: string): ModelInfo[] {
+  return raw.split(",").map((x) => x.trim()).filter(Boolean).map((x) => {
+    const [mid, label] = x.split("|").map((y) => y.trim());
+    return m({ id: idPrefix ? `${idPrefix}:${mid}` : mid, label: label || mid, provider, providerModel: mid, tools: true });
+  });
+}
+
+/** Built-in defaults for the providers that have none above (used when <PREFIX>_MODELS is not set). */
+const EXTRA_DEFAULTS: Record<string, string> = {
+  deepseek: "deepseek-chat|DeepSeek Chat",
+  mistral: "mistral-large-latest|Mistral Large",
+  xai: "grok-3-mini|Grok",
+  together: "meta-llama/Llama-3.3-70B-Instruct-Turbo|Llama 3.3 70B (Together)",
+  fireworks: "accounts/fireworks/models/llama-v3p3-70b-instruct|Llama 3.3 70B (Fireworks)",
+  cerebras: "llama-3.3-70b|Llama 3.3 70B (Cerebras)",
+  perplexity: "sonar|Perplexity Sonar",
+};
+
+/** Apply <PREFIX>_MODELS overrides + add models of providers without built-in defaults + numbered providers. */
+function withEnvModels(base: ModelInfo[]): ModelInfo[] {
+  const e = process.env;
+  let out = [...base];
+  for (const k of KNOWN) {
+    const raw = e[`${k.prefix}_MODELS`];
+    // NVIDIA keeps using the legacy MODELS env (handled in fromLegacy)
+    if (k.id === "nvidia") continue;
+    if (raw) {
+      out = out.filter((x) => x.provider !== k.id);
+      out.push(...parseModelList(raw, k.id, k.id));
+    } else if (EXTRA_DEFAULTS[k.id] && !out.some((x) => x.provider === k.id)) {
+      out.push(...parseModelList(EXTRA_DEFAULTS[k.id], k.id, k.id));
+    }
+  }
+  if (e.OLLAMA_MODELS) { out = out.filter((x) => x.provider !== "ollama"); out.push(...parseModelList(e.OLLAMA_MODELS, "ollama", "ollama")); }
+  if (e.CUSTOM_AI_MODELS) { out = out.filter((x) => x.provider !== "custom"); out.push(...parseModelList(e.CUSTOM_AI_MODELS, "custom", "custom")); }
+  for (let n = 1; n <= MAX_CUSTOM; n++) {
+    if (!e[`AI_PROVIDER_${n}_URL`]) continue;
+    const raw = e[`AI_PROVIDER_${n}_MODELS`] || e[`AI_PROVIDER_${n}_MODEL`] || "";
+    if (raw) out.push(...parseModelList(raw, `p${n}`, `p${n}`));
+  }
+  return out;
+}
+
 function fromEnvJson(): ModelInfo[] | null {
   const raw = process.env.AI_MODELS;
   if (!raw) return null;
@@ -86,11 +164,13 @@ let cache: { key: string; models: ModelInfo[] } | null = null;
 /** All models whose provider is configured. */
 export function availableModels(): ModelInfo[] {
   const active = new Set(providerConfigs().map((p) => p.id));
-  const key = [...active].join(",") + "|" + (process.env.AI_MODELS || "") + "|" + (process.env.MODELS || "");
+  const modelEnv = Object.keys(process.env).filter((k) => k.endsWith("_MODELS") || k.endsWith("_MODEL")).sort().map((k) => `${k}=${process.env[k]}`).join(";");
+  const key = [...active].join(",") + "|" + (process.env.AI_MODELS || "") + "|" + modelEnv;
   if (cache?.key === key) return cache.models;
   const legacy = fromLegacy();
   // legacy MODELS replaces only the NVIDIA defaults; other providers keep their defaults
-  const list = fromEnvJson() || (legacy ? [...legacy, ...defaults().filter((d) => d.provider !== "nvidia" || d.vision)] : defaults());
+  // AI_MODELS (JSON) = full manual control; otherwise defaults + per-provider *_MODELS env
+  const list = fromEnvJson() || withEnvModels(legacy ? [...legacy, ...defaults().filter((d) => d.provider !== "nvidia" || d.vision)] : defaults());
   const seen = new Set<string>();
   const models = list.filter((x) => active.has(x.provider) && !seen.has(x.id) && seen.add(x.id));
   cache = { key, models };
@@ -99,6 +179,14 @@ export function availableModels(): ModelInfo[] {
 
 export function getModel(id: string): ModelInfo | undefined {
   return availableModels().find((x) => x.id === id);
+}
+
+/** DEFAULT_MODEL env (registry id, e.g. "openai:gpt-4o-mini" or "p1:my-model") — used first when the user picks "Auto". */
+export function defaultModel(): ModelInfo | undefined {
+  const id = (process.env.DEFAULT_MODEL || "").trim();
+  if (!id) return undefined;
+  const all = availableModels();
+  return all.find((x) => x.id === id) || all.find((x) => x.providerModel === id);
 }
 
 export function isPolicy(v: unknown): v is Policy {

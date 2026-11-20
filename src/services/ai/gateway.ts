@@ -23,7 +23,7 @@ export async function streamChat(
   const decision = route(input);
   if (!decision.candidates.length) {
     throw new GatewayError(
-      input.hasImage ? "No vision-capable AI model is configured." : "No AI model is configured. Set NVIDIA_API_KEY (or another provider key).",
+      input.hasImage ? "No vision-capable AI model is configured." : "No AI model is configured. Set an AI provider key in env (NVIDIA_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, … or AI_PROVIDER_1_URL).",
       [],
     );
   }

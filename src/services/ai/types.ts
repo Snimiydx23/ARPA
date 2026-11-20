@@ -9,7 +9,11 @@ export type AIMessage = { role: Role; content: string | ContentPart[] };
 export type Policy = "auto" | "fast" | "balanced" | "quality";
 export const POLICIES: Policy[] = ["auto", "fast", "balanced", "quality"];
 
-export type ProviderId = "nvidia" | "openai" | "anthropic" | "google" | "groq" | "openrouter" | "ollama" | "custom";
+export type KnownProviderId =
+  | "nvidia" | "openai" | "anthropic" | "google" | "groq" | "openrouter" | "ollama" | "custom"
+  | "deepseek" | "mistral" | "xai" | "together" | "fireworks" | "cerebras" | "perplexity";
+/** known providers + any number of env-defined ones ("p1", "p2", … from AI_PROVIDER_<n>_*) */
+export type ProviderId = KnownProviderId | (string & {});
 
 export interface ProviderConfig {
   id: ProviderId;
