@@ -2,7 +2,7 @@
 // Passwordless email login — DEMO / fallback only.
 // Once GOOGLE_CLIENT_ID is configured this route is disabled (unless ALLOW_EMAIL_LOGIN=true),
 // because without email verification anyone could sign in as any address.
-import { uidFromEmail, issueToken, getOrCreateUser, status, json, blockedResponse } from "@/lib/arpa";
+import { uidFromEmail, issueToken, getOrCreateUser, subStatus, json, blockedResponse } from "@/lib/arpa";
 import { parseBody, EmailLoginSchema } from "@/lib/validate";
 import { enforceRate, clientIp } from "@/lib/rate-limit";
 import { isAdmin } from "@/services/admin";
@@ -29,7 +29,7 @@ export async function POST(req: Request) {
       ok: true,
       token: issueToken(uid),
       user: { name: u.name, email: u.email, picture: u.picture, ...(isAdmin(u) ? { isAdmin: true } : {}) },
-      sub: status(u),
+      sub: await subStatus(u),
     });
   } catch (e) {
     log.error("login.fail", e);

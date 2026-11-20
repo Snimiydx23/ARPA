@@ -3,7 +3,7 @@
 // → stream with retry + model fallback → usage tracking. SSE output format is unchanged for the client:
 //   data: {"choices":[{"delta":{"content":"…"},"finish_reason":null}]}  …  data: "[DONE]"
 import { db } from "@/lib/db";
-import { CFG, bearerUid, status, takeQuota, refundQuota, json, systemPrompt, blockedResponse, codeInterpreterPrompt } from "@/lib/arpa";
+import { CFG, bearerUid, subStatus, tokenLimitMsg, takeQuota, refundQuota, json, systemPrompt, blockedResponse, codeInterpreterPrompt } from "@/lib/arpa";
 import { parseBody, ChatRequestSchema } from "@/lib/validate";
 import { enforceRate } from "@/lib/rate-limit";
 import { logger } from "@/lib/log";
@@ -36,9 +36,9 @@ export async function POST(req: Request) {
   const dbUser = await db.user.findUnique({ where: { uid } });
   if (!dbUser) return json({ error: "User record not found. Please log in again." }, 401);
   if (dbUser.blocked) return blockedResponse();
-  const st = status(dbUser);
+  const st = await subStatus(dbUser);
   if (st.state === "expired") {
-    return json({ error: "Your free trial has ended. Please pick a plan to keep chatting.", code: "EXPIRED" }, 402);
+    return json({ error: tokenLimitMsg(st), code: "EXPIRED", sub: st }, 402);
   }
 
   // ---- build context (history trimmed to the char budget, newest first) ----
@@ -97,7 +97,7 @@ export async function POST(req: Request) {
   const q = await takeQuota(dbUser.id, st.limit);
   if (!q.ok) {
     return json({
-      error: `Today's limit (${st.limit} messages) has been reached. Please try again tomorrow` + (st.state === "trial" ? " or upgrade your plan." : "."),
+      error: `Today's limit (${st.limit} messages) has been reached. Please try again tomorrow` + (st.state === "free" ? " or upgrade your plan." : "."),
       code: "LIMIT",
     }, 429);
   }

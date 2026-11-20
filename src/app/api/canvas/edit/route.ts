@@ -2,7 +2,7 @@
 // {content, kind, language?, instruction, selection?:{start,end}} → {content, replaced:{start,end}|null, model}
 // Counts as one message of the daily quota (refunded when the AI fails).
 import { db } from "@/lib/db";
-import { CFG, json, status, takeQuota, refundQuota } from "@/lib/arpa";
+import { CFG, json, subStatus, tokenLimitMsg, takeQuota, refundQuota } from "@/lib/arpa";
 import { guard } from "@/lib/guard";
 import { parseBody, CanvasEditSchema } from "@/lib/validate";
 import { complete } from "@/services/ai/gateway";
@@ -27,8 +27,8 @@ export async function POST(req: Request) {
 
   const u = await db.user.findUnique({ where: { id: g.user.id } });
   if (!u) return json({ ok: false, error: "User not found" }, 401);
-  const st = status(u);
-  if (st.state === "expired") return json({ ok: false, error: "Your free trial has ended. Please pick a plan to keep using ARPA.", code: "EXPIRED" }, 402);
+  const st = await subStatus(u);
+  if (st.state === "expired") return json({ ok: false, error: tokenLimitMsg(st), code: "EXPIRED" }, 402);
   const q = await takeQuota(u.id, st.limit);
   if (!q.ok) return json({ ok: false, error: `Today's limit (${st.limit} messages) has been reached.`, code: "LIMIT" }, 429);
 

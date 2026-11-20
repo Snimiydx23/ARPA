@@ -2,7 +2,7 @@
 // live: checkout signature + re-fetch payment & order from Razorpay; amount/uid/plan must match.
 // simulated: only when ALLOW_SIMULATED_PAYMENTS=true.
 import { db } from "@/lib/db";
-import { bearerUid, plans, applyPayment, status, json } from "@/lib/arpa";
+import { bearerUid, plans, applyPayment, subStatus, json } from "@/lib/arpa";
 import { parseBody, PayVerifySchema } from "@/lib/validate";
 import { enforceRate } from "@/lib/rate-limit";
 import { payMode, verifyCheckoutSignature, fetchOrder, fetchPayment } from "@/lib/razorpay";
@@ -47,13 +47,13 @@ export async function POST(req: Request) {
       const d = await applyPayment(u.id, plan, pid, oid, amount);
       if (!d) return json({ error: "Could not apply plan" }, 500);
       log.info("plan.applied", { uid, plan: plan.id, pid });
-      return json({ ok: true, sub: status(d) });
+      return json({ ok: true, sub: await subStatus(d) });
     }
 
     // simulated (demo only)
     const d = await applyPayment(u.id, plan, data.razorpay_payment_id, data.razorpay_order_id || null, amount);
     if (!d) return json({ error: "Could not apply plan" }, 500);
-    return json({ ok: true, sub: status(d) });
+    return json({ ok: true, sub: await subStatus(d) });
   } catch (e) {
     log.error("verify.fail", e, { uid });
     return json({ error: "Payment verification failed. If money was deducted, it will be applied automatically or refunded." }, 502);

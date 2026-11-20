@@ -8,7 +8,7 @@
 //   IMAGE_MODEL_HD    default black-forest-labs/flux.1-dev
 //   IMAGE_API_KEY     separate nvapi key for image models (falls back to NVIDIA_API_KEY)
 import { db } from "@/lib/db";
-import { bearerUid, json, status, takeQuota, blockedResponse } from "@/lib/arpa";
+import { bearerUid, json, subStatus, tokenLimitMsg, takeQuota, blockedResponse } from "@/lib/arpa";
 import { complete } from "@/services/ai/gateway";
 import { enforceRate } from "@/lib/rate-limit";
 
@@ -144,8 +144,8 @@ export async function POST(req: Request) {
   if (!dbUser) return json({ error: "User record not found. Please log in again." }, 401);
   if (dbUser.blocked) return blockedResponse();
 
-  const st = status(dbUser);
-  if (st.state === "expired") return json({ error: "Your free trial has ended. Please pick a plan to keep using ARPA.", code: "EXPIRED" }, 402);
+  const st = await subStatus(dbUser);
+  if (st.state === "expired") return json({ error: tokenLimitMsg(st), code: "EXPIRED" }, 402);
 
   let body: any;
   try { body = await req.json(); } catch { return json({ error: "Bad request" }, 400); }
