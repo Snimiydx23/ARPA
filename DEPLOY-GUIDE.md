@@ -32,9 +32,15 @@ ARPA_AUTH_SECRET=your-random-secret-here
 
 # App config (optional — defaults shown)
 APP_NAME=ARPA
-TRIAL_DAYS=90
-DAILY_LIMIT_TRIAL=50
+# 90-day free trial removed — chat token limit instead (input+output tokens, 0 = unlimited)
+TOKEN_LIMIT_FREE=50000
+TOKEN_LIMIT_PAID=1000000
+TOKEN_LIMIT_PERIOD=month        # day | month | total
+DAILY_LIMIT_FREE=50             # daily message limit (free)
 DAILY_LIMIT_PAID=300
+# Google sign-in button (Google Cloud → APIs & Services → Credentials → OAuth client ID, type "Web application",
+# add your site URL in "Authorized JavaScript origins")
+GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
 SUPPORT_EMAIL=support@yourdomain.com
 
 # Models (comma-separated id|Label)
