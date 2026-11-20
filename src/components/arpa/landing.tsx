@@ -64,8 +64,38 @@ function GoogleLogo({ className = "size-[18px]" }: { className?: string }) {
 }
 
 /* Claude-style "Continue with Google" button — one click opens the Google account chooser (popup). */
-function GoogleButton({ clientId, onAccessToken, disabled, loading }: {
-  clientId: string; onAccessToken: (token: string) => void; disabled?: boolean; loading?: boolean;
+type FirebaseCfg = NonNullable<AppConfig["firebase"]>;
+
+/* Firebase Authentication — Google popup → Firebase ID token (SDK loaded only on click) */
+async function firebaseGoogleIdToken(cfg: FirebaseCfg): Promise<string> {
+  const [{ initializeApp, getApps }, { getAuth, GoogleAuthProvider, signInWithPopup, signOut }] = await Promise.all([
+    import("firebase/app"),
+    import("firebase/auth"),
+  ]);
+  const app = getApps().find((a) => a.name === "arpa") || initializeApp(cfg, "arpa");
+  const auth = getAuth(app);
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: "select_account" });
+  const cred = await signInWithPopup(auth, provider);
+  const idToken = await cred.user.getIdToken();
+  signOut(auth).catch(() => {}); // ARPA keeps its own session; Firebase session not needed
+  return idToken;
+}
+
+function firebaseErrorText(e: any): string | null {
+  const code = String(e?.code || "");
+  if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") return null; // user closed it
+  if (code === "auth/popup-blocked") return "Popup was blocked — please allow popups for this site.";
+  if (code === "auth/unauthorized-domain") return "This website domain is not added in Firebase → Authentication → Settings → Authorized domains.";
+  if (code === "auth/operation-not-allowed") return "Google sign-in is not enabled in Firebase → Authentication → Sign-in method.";
+  if (code === "auth/network-request-failed") return "Network error — please check your connection.";
+  return e?.message || "Google sign-in failed.";
+}
+
+function GoogleButton({ clientId, firebase, onAccessToken, onFirebaseToken, disabled, loading }: {
+  clientId: string; firebase?: FirebaseCfg | null;
+  onAccessToken: (token: string) => void; onFirebaseToken: (idToken: string) => void;
+  disabled?: boolean; loading?: boolean;
 }) {
   const cbRef = React.useRef(onAccessToken);
   cbRef.current = onAccessToken;
@@ -74,7 +104,7 @@ function GoogleButton({ clientId, onAccessToken, disabled, loading }: {
 
   // preload the Google script so the popup opens instantly on click (popup must open inside the click)
   React.useEffect(() => {
-    if (!clientId) return;
+    if (!clientId || firebase) return;
     let cancelled = false;
     loadGsi().then(() => {
       if (cancelled || !window.google?.accounts?.oauth2) return;
@@ -94,11 +124,25 @@ function GoogleButton({ clientId, onAccessToken, disabled, loading }: {
       });
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [clientId]);
+  }, [clientId, firebase]);
 
   const onClick = async () => {
+    // Firebase Authentication takes priority when configured
+    if (firebase) {
+      setOpening(true);
+      try {
+        const idToken = await firebaseGoogleIdToken(firebase);
+        onFirebaseToken(idToken);
+      } catch (e: any) {
+        const msg = firebaseErrorText(e);
+        if (msg) toast.error(msg);
+      } finally {
+        setOpening(false);
+      }
+      return;
+    }
     if (!clientId) {
-      toast.error("Google sign-in is not set up yet. Add GOOGLE_CLIENT_ID in the server env.");
+      toast.error("Google sign-in is not set up yet. Add the FIREBASE_* env values on the server.");
       return;
     }
     if (!clientRef.current) {
@@ -138,7 +182,7 @@ export function Landing({ config }: { config: AppConfig }) {
   const [loading, setLoading] = React.useState(false);
   const [showEmail, setShowEmail] = React.useState(false);
 
-  const googleEnabled = !!config.googleClientId;
+  const googleEnabled = !!config.googleClientId || !!config.firebase;
   const emailEnabled = config.emailLogin ?? !googleEnabled;
   const year = new Date().getFullYear();
 
@@ -156,6 +200,21 @@ export function Landing({ config }: { config: AppConfig }) {
     if (em) ls.set("arpa_dev_email", em);
     setSession({ user: data.user, sub: data.sub, usedToday: 0 });
     toast.success(`Welcome, ${data.user.name}!`);
+  };
+
+  const onFirebase = async (idToken: string) => {
+    setLoading(true);
+    try {
+      const { status, data } = await api<LoginResp>("/api/auth/firebase", {
+        method: "POST", body: JSON.stringify({ idToken }),
+      });
+      if (status !== 200 || !data?.ok) { toast.error(data?.error || "Google sign-in failed."); return; }
+      finishLogin(data);
+    } catch (err: any) {
+      toast.error(err?.message || "Could not connect to the server.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const onGoogle = async (accessToken: string) => {
@@ -293,7 +352,7 @@ export function Landing({ config }: { config: AppConfig }) {
               </div>
 
               <div className="mt-6 space-y-4">
-                <GoogleButton clientId={config.googleClientId || ""} onAccessToken={onGoogle} disabled={loading} loading={loading && googleEnabled} />
+                <GoogleButton clientId={config.googleClientId || ""} firebase={config.firebase} onAccessToken={onGoogle} onFirebaseToken={onFirebase} disabled={loading} loading={loading && googleEnabled} />
 
                 {emailEnabled && (
                   <div className="flex items-center gap-3 text-xs uppercase tracking-wider text-muted-foreground">
