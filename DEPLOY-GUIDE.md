@@ -217,3 +217,56 @@ prisma/schema.prisma          # Database schema
 - [ ] Configure custom domain
 - [ ] Set up HTTPS (Let's Encrypt / Cloudflare)
 - [ ] Review legal pages content
+
+## AI provider — koi bhi API env se set karo (chat ke liye)
+Jis provider ki key env me hogi, wo apne aap ON ho jayega. Ek ya zyada provider ek saath chala sakte ho.
+
+| Provider | API key env | Models env (optional) |
+|---|---|---|
+| NVIDIA NIM | `NVIDIA_API_KEY` | `MODELS` |
+| OpenAI | `OPENAI_API_KEY` | `OPENAI_MODELS` |
+| Google Gemini | `GEMINI_API_KEY` | `GEMINI_MODELS` |
+| Anthropic | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODELS` |
+| Groq | `GROQ_API_KEY` | `GROQ_MODELS` |
+| OpenRouter | `OPENROUTER_API_KEY` | `OPENROUTER_MODELS` |
+| DeepSeek | `DEEPSEEK_API_KEY` | `DEEPSEEK_MODELS` |
+| Mistral | `MISTRAL_API_KEY` | `MISTRAL_MODELS` |
+| xAI Grok | `XAI_API_KEY` | `XAI_MODELS` |
+| Together | `TOGETHER_API_KEY` | `TOGETHER_MODELS` |
+| Fireworks | `FIREWORKS_API_KEY` | `FIREWORKS_MODELS` |
+| Cerebras | `CEREBRAS_API_KEY` | `CEREBRAS_MODELS` |
+| Perplexity | `PERPLEXITY_API_KEY` | `PERPLEXITY_MODELS` |
+
+Models format: `modelId|Label,modelId2|Label2`  e.g. `OPENAI_MODELS=gpt-4.1-mini|GPT Mini,gpt-4.1|GPT 4.1`
+Har provider ka apna endpoint/proxy: `<PREFIX>_BASE_URL` (e.g. `OPENAI_BASE_URL`, `GEMINI_BASE_URL`).
+
+Koi bhi aur OpenAI-compatible API (Sarvam, Azure, LM Studio, vLLM, apna server…), max 10:
+```
+AI_PROVIDER_1_NAME=Sarvam
+AI_PROVIDER_1_URL=https://api.example.com/v1     # /chat/completions ke pehle tak
+AI_PROVIDER_1_KEY=xxxx
+AI_PROVIDER_1_MODELS=model-id|Label
+```
+
+Control:
+```
+DEFAULT_MODEL=openai:gpt-4.1-mini   # "Auto" par yahi model pehle chalega (baaki fallback)
+                                    # id format: <provider>:<modelId>, custom = p1:<modelId>, NVIDIA = sirf modelId
+AI_ONLY_PROVIDERS=openai            # sirf in providers ko use karo (comma list), baaki keys ignore
+AI_MODELS=[...]                     # (advanced) JSON se poori model list manually
+```
+Note: image generation (/api/imagine) aur embeddings abhi bhi NVIDIA key use karte hain.
+
+## Google sign-in — Firebase se (Google Cloud Console ki zaroorat nahi)
+1. https://console.firebase.google.com → Add project (ya existing project kholo)
+2. Build → Authentication → Get started → Sign-in method → **Google** → Enable → support email chuno → Save
+3. Authentication → Settings → **Authorized domains** → Add domain → `arpa-tan.vercel.app` (aur apna custom domain)
+4. Project settings (⚙) → General → Your apps → **Web (</>)** → app register karo → `firebaseConfig` values copy karo
+5. Vercel env:
+```
+FIREBASE_API_KEY=AIza...            # firebaseConfig.apiKey
+FIREBASE_AUTH_DOMAIN=xxx.firebaseapp.com
+FIREBASE_PROJECT_ID=xxx
+FIREBASE_APP_ID=1:123:web:abc       # optional
+```
+6. Redeploy. Firebase set hone par email login band ho jata hai (chahiye to ALLOW_EMAIL_LOGIN=true).
