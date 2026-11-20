@@ -35,7 +35,11 @@ export const EmailLoginSchema = z.object({
   picture: z.string().max(500).optional(),
 });
 
-export const GoogleLoginSchema = z.object({ credential: z.string().min(20).max(8000) });
+// Google sign-in: either a GIS ID token (credential) or an OAuth access token from the custom "Continue with Google" button
+export const GoogleLoginSchema = z.object({
+  credential: z.string().min(20).max(8000).optional(),
+  accessToken: z.string().min(20).max(4000).optional(),
+}).refine((d) => !!(d.credential || d.accessToken), { message: "credential or accessToken is required" });
 
 export const PlanSchema = z.object({ plan: z.string().min(1).max(40) });
 

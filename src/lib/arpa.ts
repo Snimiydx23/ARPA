@@ -6,11 +6,17 @@ import { db } from "@/lib/db";
 /* ---------------- settings (env, with sensible defaults) ---------------- */
 export const CFG = {
   appName: process.env.APP_NAME || "ARPA",
-  trialDays: Number(process.env.TRIAL_DAYS || 90),
-  limitTrial: Number(process.env.DAILY_LIMIT_TRIAL || 50),
+  trialDays: 0, // 90-day free trial removed — free users get a token limit instead (see TOKEN_LIMIT_*)
+  limitTrial: Number(process.env.DAILY_LIMIT_FREE || process.env.DAILY_LIMIT_TRIAL || 50),
   limitPaid: Number(process.env.DAILY_LIMIT_PAID || 300),
   maxTokens: Number(process.env.MAX_TOKENS || 4096),
   maxCtx: Number(process.env.MAX_CTX_CHARS || 250000), // large enough for attached documents
+  // Chat token limits (input + output tokens of all AI calls). 0 = unlimited.
+  tokenLimitFree: Math.max(0, Number(process.env.TOKEN_LIMIT_FREE ?? 50000) || 0),
+  tokenLimitPaid: Math.max(0, Number(process.env.TOKEN_LIMIT_PAID ?? 1000000) || 0),
+  // day | month | total  (day/month reset at IST midnight / 1st of month)
+  tokenPeriod: (["day", "month", "total"].includes((process.env.TOKEN_LIMIT_PERIOD || "").toLowerCase())
+    ? (process.env.TOKEN_LIMIT_PERIOD || "").toLowerCase() : "month") as "day" | "month" | "total",
   admins: (process.env.ADMIN_EMAILS || "").toLowerCase().split(",").map(s => s.trim()).filter(Boolean),
 };
 
@@ -117,7 +123,7 @@ export const clearBlockCache = (uid?: string) => (uid ? blockCache.delete(uid) :
 // V2: getOrCreateUser — ek email = ek trial
 export async function getOrCreateUser(u: { uid: string; email: string; name: string; picture?: string }) {
   const now = Date.now();
-  const trialEnds = new Date(now + CFG.trialDays * 86400000);
+  const trialEnds = new Date(now); // no free trial any more (column kept for old data)
 
   // Look for existing user by uid
   const existing = await db.user.findUnique({ where: { uid: u.uid } });
@@ -157,28 +163,74 @@ export async function getOrCreateUser(u: { uid: string; email: string; name: str
 }
 
 export type SubStatus = {
-  state: "paid" | "trial" | "expired";
-  until: number; // epoch ms
+  state: "paid" | "free" | "expired"; // expired = token limit reached
+  until: number; // epoch ms (paid plan end; 0 for free)
   daysLeft: number;
   plan: string;
-  limit: number;
+  limit: number; // daily message limit
+  tokenLimit: number; // 0 = unlimited
+  tokensUsed: number;
+  tokenPeriod: "day" | "month" | "total";
+  resetAt: number; // epoch ms when the token counter resets (0 = never)
 };
 
-export function status(d: { paidUntil: Date | null; trialEnds: Date; plan: string }): SubStatus {
+const IST_MS = 5.5 * 3600000;
+/** Start of the current token period (IST) and when it resets. */
+export function tokenWindow(period = CFG.tokenPeriod): { start: Date | null; resetAt: number } {
+  if (period === "total") return { start: null, resetAt: 0 };
+  const ist = new Date(Date.now() + IST_MS);
+  const y = ist.getUTCFullYear(), m = ist.getUTCMonth(), d = ist.getUTCDate();
+  if (period === "day") {
+    const start = Date.UTC(y, m, d) - IST_MS;
+    return { start: new Date(start), resetAt: start + 86400000 };
+  }
+  return { start: new Date(Date.UTC(y, m, 1) - IST_MS), resetAt: Date.UTC(y, m + 1, 1) - IST_MS };
+}
+
+/** Tokens (input + output) this user spent in the current period. */
+export async function tokensUsed(userId: string): Promise<number> {
+  const { start } = tokenWindow();
+  try {
+    const r = await db.usageEvent.aggregate({
+      where: { userId, ...(start ? { createdAt: { gte: start } } : {}) },
+      _sum: { inputTokens: true, outputTokens: true },
+    });
+    return (r._sum.inputTokens || 0) + (r._sum.outputTokens || 0);
+  } catch {
+    return 0;
+  }
+}
+
+export function status(d: { paidUntil: Date | null; trialEnds?: Date; plan: string }, used = 0): SubStatus {
   const now = Date.now();
   const paidUntilMs = d.paidUntil ? d.paidUntil.getTime() : 0;
-  const trialEndsMs = d.trialEnds.getTime();
   const paid = paidUntilMs > now;
-  const trial = trialEndsMs > now;
-  const state = paid ? "paid" : trial ? "trial" : "expired";
-  const until = paid ? paidUntilMs : trial ? trialEndsMs : Math.max(paidUntilMs, trialEndsMs);
+  const tokenLimit = paid ? CFG.tokenLimitPaid : CFG.tokenLimitFree;
+  const over = tokenLimit > 0 && used >= tokenLimit;
+  const state = over ? "expired" : paid ? "paid" : "free";
   return {
     state,
-    until,
-    daysLeft: state === "expired" ? 0 : Math.ceil((until - now) / 86400000),
-    plan: paid ? (d.plan || "paid") : state,
+    until: paid ? paidUntilMs : 0,
+    daysLeft: paid ? Math.ceil((paidUntilMs - now) / 86400000) : 0,
+    plan: paid ? (d.plan || "paid") : "free",
     limit: paid ? CFG.limitPaid : CFG.limitTrial,
+    tokenLimit,
+    tokensUsed: used,
+    tokenPeriod: CFG.tokenPeriod,
+    resetAt: tokenWindow().resetAt,
   };
+}
+
+/** status() + live token usage from the DB. Use this in API routes. */
+export async function subStatus(u: { id: string; paidUntil: Date | null; trialEnds?: Date; plan: string }): Promise<SubStatus> {
+  return status(u, await tokensUsed(u.id));
+}
+
+/** Message shown when the token limit is reached. */
+export function tokenLimitMsg(st: SubStatus) {
+  const when = st.tokenPeriod === "day" ? " It resets tomorrow." : st.tokenPeriod === "month" ? " It resets on the 1st of next month." : "";
+  return `You have used your chat token limit (${st.tokenLimit.toLocaleString("en-IN")} tokens).${when}` +
+    (st.plan === "free" ? " Upgrade your plan to keep chatting." : "");
 }
 
 // Daily message counter — V2 useQuota (idempotent per day)
@@ -231,11 +283,7 @@ export async function applyPayment(
   const u = await db.user.findUnique({ where: { id: userId } });
   if (!u) return null;
 
-  const base = Math.max(
-    now,
-    u.paidUntil ? u.paidUntil.getTime() : 0,
-    u.trialEnds.getTime()
-  );
+  const base = Math.max(now, u.paidUntil ? u.paidUntil.getTime() : 0); // no trial to wait for
   const newPaidUntil = new Date(base + plan.days * 86400000);
 
   const [updated] = await Promise.all([
