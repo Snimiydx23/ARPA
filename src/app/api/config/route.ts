@@ -21,6 +21,13 @@ export async function GET() {
     // Google Sign-In (set GOOGLE_CLIENT_ID in env). When enabled, passwordless email
     // login is turned off unless ALLOW_EMAIL_LOGIN=true.
     googleClientId: process.env.GOOGLE_CLIENT_ID || "",
-    emailLogin: !process.env.GOOGLE_CLIENT_ID || process.env.ALLOW_EMAIL_LOGIN === "true",
+    // Firebase Authentication (Google popup) — public web config, safe to send to the browser
+    firebase: process.env.FIREBASE_API_KEY && process.env.FIREBASE_PROJECT_ID ? {
+      apiKey: process.env.FIREBASE_API_KEY,
+      authDomain: process.env.FIREBASE_AUTH_DOMAIN || `${process.env.FIREBASE_PROJECT_ID}.firebaseapp.com`,
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      ...(process.env.FIREBASE_APP_ID ? { appId: process.env.FIREBASE_APP_ID } : {}),
+    } : null,
+    emailLogin: !(process.env.GOOGLE_CLIENT_ID || (process.env.FIREBASE_API_KEY && process.env.FIREBASE_PROJECT_ID)) || process.env.ALLOW_EMAIL_LOGIN === "true",
   });
 }
