@@ -10,7 +10,8 @@ import { logger } from "@/lib/log";
 
 export async function POST(req: Request) {
   const log = logger("auth.login", req);
-  if (process.env.GOOGLE_CLIENT_ID && process.env.ALLOW_EMAIL_LOGIN !== "true") {
+  const googleOn = !!process.env.GOOGLE_CLIENT_ID || !!(process.env.FIREBASE_API_KEY && process.env.FIREBASE_PROJECT_ID);
+  if (googleOn && process.env.ALLOW_EMAIL_LOGIN !== "true") {
     return json({ ok: false, error: "Please sign in with Google." }, 403);
   }
   const limited = await enforceRate("auth", clientIp(req));
