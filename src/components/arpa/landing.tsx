@@ -1,6 +1,6 @@
 "use client";
 // ARPA V3.6 — Landing / sign-in page (professional layout + Google Sign-In).
-// Google Identity Services button when GOOGLE_CLIENT_ID is set; email login kept as fallback.
+// Claude-style "Continue with Google" button (Google OAuth popup); email login kept as fallback.
 import * as React from "react";
 import { toast } from "sonner";
 import {
@@ -10,7 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { api, ls, tokenStore, type AppConfig, type ArpaUser, type SubStatus } from "@/lib/arpa-client";
+import { api, ls, tokenStore, fmtTokens, tokenPeriodLabel, type AppConfig, type ArpaUser, type SubStatus } from "@/lib/arpa-client";
 import { useArpa } from "@/lib/store";
 
 const FEATURES = [
@@ -52,44 +52,82 @@ function loadGsi(): Promise<void> {
   return gsiPromise;
 }
 
-function GoogleButton({ clientId, onCredential, disabled }: {
-  clientId: string; onCredential: (cred: string) => void; disabled?: boolean;
-}) {
-  const ref = React.useRef<HTMLDivElement>(null);
-  const cbRef = React.useRef(onCredential);
-  cbRef.current = onCredential;
-  const [ready, setReady] = React.useState(false);
-  const [failed, setFailed] = React.useState(false);
+function GoogleLogo({ className = "size-[18px]" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 48 48" className={className} aria-hidden>
+      <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z" />
+      <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z" />
+      <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z" />
+      <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z" />
+    </svg>
+  );
+}
 
+/* Claude-style "Continue with Google" button — one click opens the Google account chooser (popup). */
+function GoogleButton({ clientId, onAccessToken, disabled, loading }: {
+  clientId: string; onAccessToken: (token: string) => void; disabled?: boolean; loading?: boolean;
+}) {
+  const cbRef = React.useRef(onAccessToken);
+  cbRef.current = onAccessToken;
+  const clientRef = React.useRef<any>(null);
+  const [opening, setOpening] = React.useState(false);
+
+  // preload the Google script so the popup opens instantly on click (popup must open inside the click)
   React.useEffect(() => {
+    if (!clientId) return;
     let cancelled = false;
     loadGsi().then(() => {
-      if (cancelled || !ref.current || !window.google) return;
-      window.google.accounts.id.initialize({
+      if (cancelled || !window.google?.accounts?.oauth2) return;
+      clientRef.current = window.google.accounts.oauth2.initTokenClient({
         client_id: clientId,
-        callback: (r: { credential?: string }) => r.credential && cbRef.current(r.credential),
-        ux_mode: "popup",
-        auto_select: false,
-        cancel_on_tap_outside: true,
+        scope: "openid email profile",
+        prompt: "select_account",
+        callback: (r: { access_token?: string; error?: string }) => {
+          setOpening(false);
+          if (r?.access_token) cbRef.current(r.access_token);
+          else if (r?.error) toast.error("Google sign-in was cancelled.");
+        },
+        error_callback: (e: { type?: string }) => {
+          setOpening(false);
+          if (e?.type === "popup_failed_to_open") toast.error("Popup was blocked — please allow popups for this site.");
+        },
       });
-      const width = Math.min(360, Math.max(240, ref.current.offsetWidth || 320));
-      window.google.accounts.id.renderButton(ref.current, {
-        type: "standard", theme: "outline", size: "large", text: "continue_with",
-        shape: "rectangular", logo_alignment: "center", width,
-      });
-      setReady(true);
-    }).catch(() => !cancelled && setFailed(true));
+    }).catch(() => {});
     return () => { cancelled = true; };
   }, [clientId]);
 
-  if (failed) {
-    return <p className="text-center text-sm text-destructive">Google Sign-In could not load. Please check your connection and refresh.</p>;
-  }
+  const onClick = async () => {
+    if (!clientId) {
+      toast.error("Google sign-in is not set up yet. Add GOOGLE_CLIENT_ID in the server env.");
+      return;
+    }
+    if (!clientRef.current) {
+      try {
+        await loadGsi();
+        clientRef.current = window.google.accounts.oauth2.initTokenClient({
+          client_id: clientId, scope: "openid email profile", prompt: "select_account",
+          callback: (r: { access_token?: string }) => { setOpening(false); if (r?.access_token) cbRef.current(r.access_token); },
+        });
+      } catch {
+        toast.error("Google Sign-In could not load. Please check your connection and refresh.");
+        return;
+      }
+    }
+    setOpening(true);
+    clientRef.current.requestAccessToken();
+  };
+
+  const busy = loading || opening;
   return (
-    <div className={`relative ${disabled ? "pointer-events-none opacity-60" : ""}`}>
-      {!ready && <div className="h-10 w-full animate-pulse rounded-md border border-border bg-muted/60" />}
-      <div ref={ref} className="flex w-full justify-center" />
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled || busy}
+      className="flex h-11 w-full items-center justify-center gap-3 rounded-lg border border-border bg-background px-4 text-sm font-medium text-foreground shadow-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-arpa disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      {busy ? <Loader2 className="size-[18px] animate-spin" /> : <GoogleLogo />}
+      <span>{busy ? "Signing in…" : "Continue with Google"}</span>
+    </button>
   );
 }
 
@@ -109,9 +147,9 @@ export function Landing({ config }: { config: AppConfig }) {
     if (last) setEmail(last);
   }, []);
 
-  const trialText = config.trialDays >= 60
-    ? `First ${Math.round(config.trialDays / 30)} months free`
-    : `First ${config.trialDays} days free`;
+  const trialText = config.tokenLimitFree
+    ? `Free ${fmtTokens(config.tokenLimitFree)} chat tokens${tokenPeriodLabel(config.tokenPeriod || "month").replace(" this month", " every month").replace(" today", " every day")}`
+    : "Start chatting free";
 
   const finishLogin = (data: LoginResp, em?: string) => {
     tokenStore.set(data.token);
@@ -120,11 +158,11 @@ export function Landing({ config }: { config: AppConfig }) {
     toast.success(`Welcome, ${data.user.name}!`);
   };
 
-  const onGoogle = async (credential: string) => {
+  const onGoogle = async (accessToken: string) => {
     setLoading(true);
     try {
       const { status, data } = await api<LoginResp>("/api/auth/google", {
-        method: "POST", body: JSON.stringify({ credential }),
+        method: "POST", body: JSON.stringify({ accessToken }),
       });
       if (status !== 200 || !data?.ok) { toast.error(data?.error || "Google sign-in failed."); return; }
       finishLogin(data);
@@ -251,21 +289,13 @@ export function Landing({ config }: { config: AppConfig }) {
               <div className="text-center">
                 <div className="mx-auto grid size-11 place-items-center rounded-xl bg-arpa text-lg font-bold text-arpa-foreground">A</div>
                 <h2 className="mt-4 text-xl font-semibold tracking-tight">Sign in to {config.app || "ARPA"}</h2>
-                <p className="mt-1 text-sm text-muted-foreground">Start your free trial — no card required.</p>
+                <p className="mt-1 text-sm text-muted-foreground">Sign in with your Google account — no card required.</p>
               </div>
 
               <div className="mt-6 space-y-4">
-                {googleEnabled && (
-                  <GoogleButton clientId={config.googleClientId!} onCredential={onGoogle} disabled={loading} />
-                )}
+                <GoogleButton clientId={config.googleClientId || ""} onAccessToken={onGoogle} disabled={loading} loading={loading && googleEnabled} />
 
-                {googleEnabled && loading && (
-                  <p className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-                    <Loader2 className="size-4 animate-spin" /> Signing you in…
-                  </p>
-                )}
-
-                {googleEnabled && emailEnabled && (
+                {emailEnabled && (
                   <div className="flex items-center gap-3 text-xs uppercase tracking-wider text-muted-foreground">
                     <span className="h-px flex-1 bg-border" /> or <span className="h-px flex-1 bg-border" />
                   </div>

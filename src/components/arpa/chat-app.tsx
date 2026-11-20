@@ -15,7 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { useArpa, selectCurChat } from "@/lib/store";
 import {
   type Project,
-  api, streamChat, uid, modelStore, tokenStore, settingsStore, chatToMarkdown, chatToJson, downloadFile, printChat, fmtDate,
+  api, streamChat, uid, modelStore, tokenStore, settingsStore, chatToMarkdown, chatToJson, downloadFile, printChat, fmtDate, fmtTokens, tokenPeriodLabel,
   type Chat, type ChatMsg, type WebSource, type FileSource, type AgentStep, type SubStatus, type AppConfig,
 } from "@/lib/arpa-client";
 import { Sidebar, deleteChat, renameChat, pinChat } from "./sidebar";
@@ -58,7 +58,6 @@ function greeting() {
 const TIPS = [
   "💡 Tip: Press Ctrl+K for a new chat, Ctrl+/ to open the command palette",
   "💡 Tip: Use the mic to dictate, and the speaker to hear ARPA's reply",
-  "💡 Tip: Upload an image and get a description (VLM)",
   "💡 Tip: Use the globe for live web search, sent right into the chat",
   "💡 Tip: Use GitFork to branch off from any message",
   "💡 Tip: Use Share to create a public read-only link for a chat",
@@ -331,7 +330,7 @@ export function ChatApp({ config }: { config: AppConfig }) {
           genImage: { id: data.id, url: data.url || `/api/imagine/${data.id}`, prompt: data.prompt || userMsg.content, width: data.width || 1024, height: data.height || 1024, seed: data.seed },
         };
       } else {
-        if (data?.code === "EXPIRED") setSub({ ...sub!, state: "expired", daysLeft: 0 });
+        if (data?.code === "EXPIRED") setSub({ ...sub!, state: "expired" });
         const fallback = status === 504 || status === 408
           ? "Image generation took too long (the free image service is busy). Please press Regenerate to try again."
           : `Image error ${status}`;
@@ -352,6 +351,17 @@ export function ChatApp({ config }: { config: AppConfig }) {
       }).catch(() => {});
     }
     setBusy(false, null);
+  };
+
+  // refresh plan + token usage from the server (token counter updates after each AI reply)
+  const refreshSub = () => {
+    setTimeout(() => {
+      api<{ ok: boolean; sub?: SubStatus; usedToday?: number }>("/api/me")
+        .then(({ status, data }) => {
+          if (status === 200 && data?.ok && data.sub) useArpa.setState({ sub: data.sub, usedToday: data.usedToday ?? useArpa.getState().usedToday });
+        })
+        .catch(() => {});
+    }, 1200);
   };
 
   const run = async (chatId: string, msgs: ChatMsg[], aiMsg: ChatMsg, modelId: string) => {
@@ -408,7 +418,7 @@ export function ChatApp({ config }: { config: AppConfig }) {
       if (!response.ok || !response.body) {
         const d = await response.json().catch(() => ({}));
         if (d.code === "EXPIRED") {
-          setSub({ ...sub!, state: "expired", daysLeft: 0 });
+          setSub(d.sub || { ...sub!, state: "expired" });
         }
         const err = new Error(d.error || `Server error ${response.status}`);
         (err as any).code = d.code;
@@ -521,6 +531,7 @@ export function ChatApp({ config }: { config: AppConfig }) {
       }).catch(() => {});
     }
     setBusy(false, null);
+    refreshSub();
     // the answer contains a python block → run it in the browser and send the output back (max 3 rounds)
     if (ci && !errored && !cut && finalMsg.content) maybeAutoRun(chatId);
   };
@@ -907,9 +918,11 @@ export function ChatApp({ config }: { config: AppConfig }) {
   return (
     <div className="flex h-dvh overflow-hidden bg-background">
       {/* desktop sidebar */}
-      <aside className="hidden w-[270px] shrink-0 border-r border-sidebar-border md:flex md:flex-col">
-        <Sidebar {...sidebarProps} />
-        <div className="border-t border-sidebar-border p-2">
+      <aside className="hidden h-dvh w-[270px] shrink-0 overflow-hidden border-r border-sidebar-border md:flex md:flex-col">
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <Sidebar {...sidebarProps} />
+        </div>
+        <div className="shrink-0 border-t border-sidebar-border bg-sidebar p-2">
           {sub.state !== "paid" && <UpgradeCard sub={sub} onClick={() => setPlansOpen(true)} />}
           <ProfileMenu {...profileProps} />
         </div>
@@ -920,9 +933,11 @@ export function ChatApp({ config }: { config: AppConfig }) {
         <SheetContent side="left" className="w-[280px] p-0">
           <SheetTitle className="sr-only">Mobile sidebar</SheetTitle>
           <SheetDescription className="sr-only">Chat history and profile menu</SheetDescription>
-          <div className="flex h-full flex-col">
-            <Sidebar {...sidebarProps} onClose={() => setSheetOpen(false)} />
-            <div className="border-t border-sidebar-border p-2">
+          <div className="flex h-full min-h-0 flex-col overflow-hidden">
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <Sidebar {...sidebarProps} onClose={() => setSheetOpen(false)} />
+            </div>
+            <div className="shrink-0 border-t border-sidebar-border bg-sidebar p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
               {sub.state !== "paid" && <UpgradeCard sub={sub} onClick={() => { setPlansOpen(true); setSheetOpen(false); }} />}
               <ProfileMenu {...profileProps} />
             </div>
@@ -965,7 +980,7 @@ export function ChatApp({ config }: { config: AppConfig }) {
             <span>Search…</span>
             <kbd className="rounded border border-border bg-background px-1 py-0 text-[10px]">Ctrl /</kbd>
           </button>
-          {sub.state !== "paid" && (sub.state === "expired" || sub.daysLeft <= 15) && (
+          {sub.state !== "paid" && (
             <Button
               size="sm"
               className="hidden bg-arpa-soft text-arpa hover:bg-arpa-soft hover:opacity-90 sm:inline-flex"
@@ -1042,7 +1057,7 @@ export function ChatApp({ config }: { config: AppConfig }) {
             <Badge variant="secondary" className="gap-1.5 text-xs font-normal">
               <CalendarClock className="size-3" />
               {usedToday}/{sub.limit} today
-              {sub.state === "trial" && ` · ${sub.daysLeft} days left`}
+              {sub.tokenLimit > 0 && ` · ${fmtTokens(sub.tokensUsed)}/${fmtTokens(sub.tokenLimit)} tokens${tokenPeriodLabel(sub.tokenPeriod)}`}
             </Badge>
           </div>
         )}
@@ -1140,8 +1155,8 @@ export function ChatApp({ config }: { config: AppConfig }) {
           busy={busy}
           disabled={!sub || sub.state === "expired"}
           locked={locked}
-          lockText="Free trial has ended"
-          lockSub="Choose a plan to keep chatting."
+          lockText="Chat token limit reached"
+          lockSub={`${fmtTokens(sub.tokensUsed)}/${fmtTokens(sub.tokenLimit)} tokens used${sub.tokenPeriod === "day" ? " · resets tomorrow" : sub.tokenPeriod === "month" ? " · resets on the 1st" : ""}${sub.state === "expired" && sub.plan === "free" ? " · choose a plan to keep chatting" : ""}.`}
           onSend={send}
           onStop={stop}
           onPlans={() => setPlansOpen(true)}

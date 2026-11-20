@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { api, fmtDate, rupee, type Plan, type SubStatus } from "@/lib/arpa-client";
+import { api, fmtDate, fmtTokens, tokenPeriodLabel, rupee, type Plan, type SubStatus } from "@/lib/arpa-client";
 
 declare global { interface Window { Razorpay?: any } }
 
@@ -75,9 +75,9 @@ export function PlansModal({
   const statusText =
     sub.state === "paid"
       ? `Your plan is active until ${fmtDate(sub.until)}. Any new plan you buy will add days on top of this one.`
-      : sub.state === "trial"
-      ? `Free trial: ${sub.daysLeft} days left (until ${fmtDate(sub.until)}). If you buy now, your plan starts after the trial ends.`
-      : "Your free trial has ended.";
+      : sub.state === "free"
+      ? `You are on the free plan${sub.tokenLimit > 0 ? ` — ${fmtTokens(sub.tokensUsed)} of ${fmtTokens(sub.tokenLimit)} chat tokens used${tokenPeriodLabel(sub.tokenPeriod)}` : ""}. Upgrade for a higher token limit.`
+      : `You have reached your chat token limit (${fmtTokens(sub.tokenLimit)} tokens${tokenPeriodLabel(sub.tokenPeriod)}).${sub.plan === "free" ? " Pick a plan to keep chatting." : ""}`;
 
   const buy = async (plan: Plan) => {
     setBusyId(plan.id);

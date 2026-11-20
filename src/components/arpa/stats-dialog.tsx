@@ -10,7 +10,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { api, fmtDate, type SubStatus } from "@/lib/arpa-client";
+import { api, fmtDate, fmtTokens, tokenPeriodLabel, type SubStatus } from "@/lib/arpa-client";
 
 type Day = { day: string; count: number };
 type Stats = {
@@ -147,9 +147,13 @@ export function StatsDialog({
                 <span className="text-muted-foreground">Daily limit</span>
                 <span className="font-medium">{sub.limit} messages</span>
               </div>
-              {sub.state !== "expired" && (
+              <div className="mt-1.5 flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">Chat tokens{tokenPeriodLabel(sub.tokenPeriod)}</span>
+                <span className="font-medium">{sub.tokenLimit > 0 ? `${fmtTokens(sub.tokensUsed)} / ${fmtTokens(sub.tokenLimit)}` : "Unlimited"}</span>
+              </div>
+              {sub.state === "paid" && (
                 <div className="mt-1.5 flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">{sub.state === "paid" ? "Renews" : "Trial ends"}</span>
+                  <span className="text-muted-foreground">Renews</span>
                   <span className="font-medium">{fmtDate(sub.until)}</span>
                 </div>
               )}

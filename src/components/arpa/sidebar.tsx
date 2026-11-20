@@ -124,7 +124,7 @@ export function Sidebar({
   }, [rest]);
 
   return (
-    <div className="flex h-full flex-col bg-sidebar">
+    <div className="flex h-full min-h-0 flex-col bg-sidebar">
       {/* top */}
       <div className="flex items-center gap-2 px-3 pt-3 pb-2">
         <div className="grid size-7 place-items-center rounded-md bg-arpa text-sm font-extrabold text-arpa-foreground">A</div>

@@ -43,9 +43,9 @@ export function LegalModal({
               <h3 className="text-base font-semibold">Terms of Service</h3>
               <ol className="list-decimal space-y-2 pl-5">
                 <li>ARPA is an AI chat service operated by us. By using the service you agree to these terms.</li>
-                <li><b>Account:</b> Login is by email. One person can take only one free trial.</li>
-                <li><b>Free trial:</b> New accounts get a 90-day free trial with a daily message limit. To keep chatting after the trial, you must buy a paid plan.</li>
-                <li><b>Paid plans:</b> A plan is a one-time payment (no auto-renew). The plan period starts after payment (or after the trial ends). A daily message limit applies for fair use.</li>
+                <li><b>Account:</b> Login is by Google or email.</li>
+                <li><b>Free plan:</b> Every account gets a free chat token limit (plus a daily message limit). When the limit is used up, wait for it to reset or buy a paid plan.</li>
+                <li><b>Paid plans:</b> A plan is a one-time payment (no auto-renew). The plan period starts after payment. A higher chat token limit and a daily message limit apply for fair use.</li>
                 <li><b>AI answers:</b> AI answers may be wrong or incomplete. Do not treat them as professional (legal, tax, medical, financial) advice — please confirm with an expert before important decisions.</li>
                 <li><b>Prohibited:</b> Using the service for illegal, harmful, spam, or rights-violating activities; hacking, overloading, or reselling the service. Doing so may result in account suspension.</li>
                 <li>We may change, interrupt, or discontinue the service at any time. Our liability is limited to the amount you paid us in the past 3 months.</li>

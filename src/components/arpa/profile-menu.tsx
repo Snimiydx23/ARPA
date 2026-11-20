@@ -14,7 +14,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { ArpaUser, SubStatus } from "@/lib/arpa-client";
+import { fmtTokens, tokenPeriodLabel, type ArpaUser, type SubStatus } from "@/lib/arpa-client";
 
 function initials(name: string) {
   return (name || "U").charAt(0).toUpperCase();
@@ -49,7 +49,7 @@ export function ProfileMenu({
   const isDark = resolvedTheme === "dark";
   const planText =
     sub.state === "paid" ? `Pro · ${new Date(sub.until).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}` :
-    sub.state === "trial" ? `Free trial · ${sub.daysLeft} days` : "Trial ended";
+    sub.state === "free" ? (sub.tokenLimit > 0 ? `Free · ${fmtTokens(sub.tokensUsed)}/${fmtTokens(sub.tokenLimit)} tokens` : "Free plan") : "Token limit reached";
 
   return (
     <DropdownMenu>
@@ -66,7 +66,13 @@ export function ProfileMenu({
           <ChevronDown className="size-3.5 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent side="top" align="start" className="mb-2 min-w-[240px]">
+      <DropdownMenuContent
+        side="top"
+        align="start"
+        collisionPadding={8}
+        className="mb-2 flex max-h-[min(80dvh,var(--radix-dropdown-menu-content-available-height))] min-w-[240px] flex-col overflow-hidden p-0"
+      >
+        <div className="min-h-0 flex-1 overflow-y-auto p-1">
         <DropdownMenuLabel className="truncate">{user.email}</DropdownMenuLabel>
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={onPlans}>
@@ -112,10 +118,13 @@ export function ProfileMenu({
         <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={() => { if (confirm("Permanently delete all chats?")) onClearChats(); }}>
           <Trash2 className="mr-2 size-4" /> Delete all chats
         </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={onLogout}>
-          <LogOut className="mr-2 size-4" /> Log out
-        </DropdownMenuItem>
+        </div>
+        {/* Log out is outside the scroll area so it is always visible */}
+        <div className="shrink-0 border-t border-border p-1">
+          <DropdownMenuItem onSelect={onLogout}>
+            <LogOut className="mr-2 size-4" /> Log out
+          </DropdownMenuItem>
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -123,7 +132,9 @@ export function ProfileMenu({
 
 export function UpgradeCard({ sub, onClick }: { sub: SubStatus; onClick: () => void }) {
   if (sub.state === "paid") return null;
-  const text = sub.state === "trial" ? `Free trial: ${sub.daysLeft} days left` : "Trial ended — get a plan";
+  const text = sub.state === "free"
+    ? (sub.tokenLimit > 0 ? `${fmtTokens(Math.max(0, sub.tokenLimit - sub.tokensUsed))} tokens left${tokenPeriodLabel(sub.tokenPeriod)}` : "Free plan")
+    : "Token limit reached — get a plan";
   return (
     <Button
       onClick={onClick}
